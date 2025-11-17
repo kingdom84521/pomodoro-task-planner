@@ -1,0 +1,51 @@
+{
+  "name": "pomodoro-task-planner",
+  "version": "1.0.0",
+  "description": "Pomodoro Task Planning Application - Full Stack",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "install:all": "yarn install && cd backend && yarn install && cd ../frontend && yarn install",
+    "dev:backend": "cd backend && yarn dev",
+    "dev:frontend": "cd frontend && yarn dev",
+    "dev": "concurrently \"yarn dev:backend\" \"yarn dev:frontend\"",
+    "build:backend": "cd backend && yarn build",
+    "build:frontend": "cd frontend && yarn build",
+    "build": "yarn build:backend && yarn build:frontend",
+    "test:backend": "cd backend && yarn test",
+    "test:frontend": "cd frontend && yarn run test:unit",
+    "test": "yarn test:backend && yarn test:frontend",
+    "lint:backend": "cd backend && yarn lint",
+    "lint:frontend": "cd frontend && yarn lint",
+    "lint": "yarn lint:backend && yarn lint:frontend",
+    "format": "prettier --write \"**/*.{js,ts,vue,json,md}\"",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose build",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.1.1"
+  },
+  "lint-staged": {
+    "backend/**/*.ts": [
+      "cd backend && yarn lint:fix",
+      "cd backend && yarn format"
+    ],
+    "frontend/**/*.{vue,ts}": [
+      "cd frontend && yarn lint:fix",
+      "cd frontend && yarn format"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "yarn": ">=4.0.0"
+  },
+  "packageManager": "yarn@4.11.0"
+}
