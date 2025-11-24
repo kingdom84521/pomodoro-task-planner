@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 15px;
+      margin: 0;
+      font-size: 13px;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    h3 {
+      margin: 0 0 5px 0;
+      color: #333;
+      font-size: 16px;
+    }
+    .target-info {
+      background-color: #E8F0FE;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #1967D2;
+      margin-bottom: 10px;
+    }
+    .target-info strong {
+      color: #185ABC;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    label {
+      font-weight: bold;
+      color: #555;
+      font-size: 12px;
+    }
+    input[type="text"],
+    input[type="number"],
+    input[type="date"],
+    input[type="datetime-local"],
+    select,
+    textarea {
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: #4285F4;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .checkbox-group input[type="checkbox"] {
+      width: auto;
+    }
+    .checkbox-group label {
+      font-weight: normal;
+    }
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    button {
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      flex: 1;
+    }
+    .btn-primary {
+      background-color: #4285F4;
+      color: white;
+      border: none;
+    }
+    .btn-primary:hover {
+      background-color: #3367D6;
+    }
+    .btn-secondary {
+      background-color: white;
+      color: #333;
+      border: 1px solid #ddd;
+    }
+    .btn-secondary:hover {
+      background-color: #f5f5f5;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .message {
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      display: none;
+    }
+    .message.success {
+      background-color: #E6F4EA;
+      color: #1E8E3E;
+      display: block;
+    }
+    .message.error {
+      background-color: #FCE8E6;
+      color: #D93025;
+      display: block;
+    }
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+    .description {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="targetInfo" class="target-info" style="display: none;"></div>
+    <div id="message" class="message"></div>
+    <div id="loading" class="loading">載入中...</div>
+    <form id="taskForm" style="display: none;">
+      <div id="formFields"></div>
+      <div class="buttons">
+        <button type="button" class="btn-secondary" onclick="clearForm()">清除</button>
+        <button type="submit" class="btn-primary" id="submitBtn">新增</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    let fieldDefinitions = [];
+    let enumDefinitions = {};
+
+    // 初始化
+    google.script.run
+      .withSuccessHandler(initForm)
+      .withFailureHandler(showError)
+      .getTaskFormData();
+
+    function initForm(data) {
+      if (data.error) {
+        showError(data.error);
+        return;
+      }
+
+      fieldDefinitions = data.fields;
+      enumDefinitions = data.enums;
+
+      // 顯示目標使用者資訊
+      if (data.targetInfo) {
+        const targetDiv = document.getElementById('targetInfo');
+        targetDiv.innerHTML = `目標: <strong>${data.targetInfo.userName}</strong> / ${data.targetInfo.sheetName}`;
+        targetDiv.style.display = 'block';
+      }
+
+      // 產生表單欄位
+      const container = document.getElementById('formFields');
+      container.innerHTML = '';
+
+      // 先找出任務名稱欄位並優先顯示
+      const taskNameField = fieldDefinitions.find(f => f.title === '任務名稱');
+      const taskNameIndex = fieldDefinitions.findIndex(f => f.title === '任務名稱');
+
+      if (taskNameField && taskNameIndex >= 0) {
+        const formGroup = createFormField(taskNameField, taskNameIndex);
+        container.appendChild(formGroup);
+      }
+
+      // 再顯示其他欄位
+      fieldDefinitions.forEach((field, index) => {
+        // 跳過任務序號（自動產生）、任務狀態（預設為待處理）和任務名稱（已經先顯示）
+        if (field.title === '任務序號' || field.title === '任務狀態' || field.title === '任務名稱') {
+          return;
+        }
+
+        const formGroup = createFormField(field, index);
+        container.appendChild(formGroup);
+      });
+
+      // 顯示表單
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('taskForm').style.display = 'block';
+    }
+
+    function createFormField(field, index) {
+      const div = document.createElement('div');
+      div.className = 'form-group';
+
+      const label = document.createElement('label');
+      label.textContent = field.title;
+      label.setAttribute('for', 'field_' + index);
+      div.appendChild(label);
+
+      let input;
+
+      switch (field.dataType) {
+        case 'boolean':
+        case 'bool':
+          // Checkbox
+          const checkboxGroup = document.createElement('div');
+          checkboxGroup.className = 'checkbox-group';
+          input = document.createElement('input');
+          input.type = 'checkbox';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          checkboxGroup.appendChild(input);
+          const checkLabel = document.createElement('label');
+          checkLabel.setAttribute('for', 'field_' + index);
+          checkLabel.textContent = '是';
+          checkboxGroup.appendChild(checkLabel);
+          div.appendChild(checkboxGroup);
+          break;
+
+        case 'number':
+        case 'integer':
+          input = document.createElement('input');
+          input.type = 'number';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          if (field.dataType === 'integer') {
+            input.step = '1';
+          }
+          div.appendChild(input);
+          break;
+
+        case 'float':
+          input = document.createElement('input');
+          input.type = 'number';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          input.step = '0.01';
+          div.appendChild(input);
+          break;
+
+        case 'date':
+          input = document.createElement('input');
+          input.type = 'date';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          div.appendChild(input);
+          break;
+
+        case 'datetime':
+          input = document.createElement('input');
+          input.type = 'datetime-local';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          div.appendChild(input);
+          break;
+
+        case 'enum':
+          input = document.createElement('select');
+          input.id = 'field_' + index;
+          input.name = field.title;
+
+          // 加入空選項
+          const emptyOption = document.createElement('option');
+          emptyOption.value = '';
+          emptyOption.textContent = '-- 請選擇 --';
+          input.appendChild(emptyOption);
+
+          // 加入 enum 選項
+          if (field.enumName && enumDefinitions[field.enumName]) {
+            enumDefinitions[field.enumName].forEach(value => {
+              const option = document.createElement('option');
+              option.value = value;
+              option.textContent = value;
+              input.appendChild(option);
+            });
+          }
+          div.appendChild(input);
+          break;
+
+        case 'text':
+          input = document.createElement('textarea');
+          input.id = 'field_' + index;
+          input.name = field.title;
+          input.rows = 3;
+          div.appendChild(input);
+          break;
+
+        default: // string
+          input = document.createElement('input');
+          input.type = 'text';
+          input.id = 'field_' + index;
+          input.name = field.title;
+          div.appendChild(input);
+      }
+
+      // 顯示描述
+      if (field.description) {
+        const desc = document.createElement('div');
+        desc.className = 'description';
+        desc.textContent = field.description;
+        div.appendChild(desc);
+      }
+
+      return div;
+    }
+
+    function showError(error) {
+      const message = document.getElementById('message');
+      message.className = 'message error';
+      message.textContent = typeof error === 'string' ? error : error.message;
+      document.getElementById('loading').style.display = 'none';
+    }
+
+    function showSuccess(text) {
+      const message = document.getElementById('message');
+      message.className = 'message success';
+      message.textContent = text;
+    }
+
+    function clearMessage() {
+      const message = document.getElementById('message');
+      message.className = 'message';
+    }
+
+    function clearForm() {
+      document.getElementById('taskForm').reset();
+      clearMessage();
+    }
+
+    // 表單提交
+    document.getElementById('taskForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      clearMessage();
+
+      const submitBtn = document.getElementById('submitBtn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = '新增中...';
+
+      // 收集表單資料
+      const taskData = {};
+
+      fieldDefinitions.forEach((field, index) => {
+        // 跳過自動產生的欄位
+        if (field.title === '任務序號') {
+          taskData[field.title] = ''; // 由公式自動計算
+          return;
+        }
+
+        // 任務狀態預設為「待處理」
+        if (field.title === '任務狀態') {
+          taskData[field.title] = '待處理';
+          return;
+        }
+
+        const input = document.querySelector('[name="' + field.title + '"]');
+        if (!input) return;
+
+        let value;
+        if (field.dataType === 'boolean' || field.dataType === 'bool') {
+          value = input.checked;
+        } else if (field.dataType === 'number' || field.dataType === 'integer' || field.dataType === 'float') {
+          value = input.value ? parseFloat(input.value) : '';
+        } else {
+          value = input.value;
+        }
+
+        taskData[field.title] = value;
+      });
+
+      // 檢查任務名稱是否為空
+      if (!taskData['任務名稱'] || taskData['任務名稱'].trim() === '') {
+        showError('任務名稱不可為空');
+        submitBtn.disabled = false;
+        submitBtn.textContent = '新增';
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = '新增';
+
+          if (result.success) {
+            showSuccess('任務已新增');
+            clearForm();
+          } else {
+            showError(result.error || '新增失敗');
+          }
+        })
+        .withFailureHandler(function(error) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = '新增';
+          showError(error);
+        })
+        .addTask(taskData);
+    });
+  </script>
+</body>
+</html>
