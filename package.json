@@ -1,0 +1,17 @@
+{
+  "name": "pomodoro-task-planner-web",
+  "packageManager": "yarn@4.12.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"yarn workspace backend dev\" \"yarn workspace pomodoro-frontend dev\"",
+    "dev:backend": "yarn workspace backend dev",
+    "dev:frontend": "yarn workspace pomodoro-frontend dev",
+    "build:frontend": "yarn workspace pomodoro-frontend build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
