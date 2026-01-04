@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import cron from 'node-cron'
 import 'dotenv/config'
 import { initDatabase } from './database/index.js'
 import { errorHandler } from './middleware/errorHandler.js'
@@ -14,6 +15,14 @@ import configRouter from './routes/config.js'
 import userSettingsRouter from './routes/userSettings.js'
 import routineTasksRouter from './routes/routineTasks.js'
 import meetingsRouter from './routes/meetings.js'
+import analyticsRouter from './routes/analytics.js'
+import {
+  onServerStart,
+  recalculateYesterdayForAllUsers,
+  logCronJobResult,
+  formatDate,
+  subDays,
+} from './services/dailyAnalyticsService.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -44,15 +53,51 @@ app.use('/api/work-records', jwtCheck, extractUserInfo, workRecordsRouter)
 app.use('/api/user-settings', jwtCheck, extractUserInfo, userSettingsRouter)
 app.use('/api/routine-tasks', jwtCheck, extractUserInfo, routineTasksRouter)
 app.use('/api/meetings', jwtCheck, extractUserInfo, meetingsRouter)
+app.use('/api/analytics', jwtCheck, extractUserInfo, analyticsRouter)
 
 // Error handling middleware (must be last)
 app.use(errorHandler)
+
+// Set up daily analytics cron job
+function setupDailyAnalyticsCron() {
+  // Run every day at 2:00 AM (configurable via env)
+  const cronSchedule = process.env.ANALYTICS_CRON_SCHEDULE || '0 2 * * *'
+  const timezone = process.env.TZ || 'Asia/Taipei'
+
+  cron.schedule(
+    cronSchedule,
+    async () => {
+      const yesterday = formatDate(subDays(new Date(), 1))
+      console.log(`[Cron] Starting daily analytics recalculation for ${yesterday}...`)
+
+      try {
+        await recalculateYesterdayForAllUsers()
+        await logCronJobResult(yesterday, 'completed')
+        console.log(`[Cron] Daily analytics completed for ${yesterday}`)
+      } catch (error) {
+        await logCronJobResult(yesterday, 'failed', error.message)
+        console.error('[Cron] Daily analytics failed:', error)
+      }
+    },
+    {
+      timezone,
+    }
+  )
+
+  console.log(`✓ Daily analytics cron job scheduled: ${cronSchedule} (${timezone})`)
+}
 
 // Initialize database and start server
 async function startServer() {
   try {
     // Initialize database
     await initDatabase()
+
+    // Check for missed cron jobs and backfill if needed
+    await onServerStart()
+
+    // Set up daily analytics cron job
+    setupDailyAnalyticsCron()
 
     // Start listening
     app.listen(PORT, () => {

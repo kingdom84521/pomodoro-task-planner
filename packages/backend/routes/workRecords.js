@@ -15,12 +15,18 @@ const router = express.Router()
 /**
  * GET /api/work-records
  * Get all work records for the current user
- * Query params: limit, offset
+ * Query params:
+ *   - startDate: Start date (YYYY-MM-DD), inclusive
+ *   - endDate: End date (YYYY-MM-DD), inclusive
+ *   - limit: Max records (optional, ignored if date range provided)
+ *   - offset: Skip records
  */
 router.get('/', asyncHandler(async (req, res) => {
-  const { limit = 50, offset = 0 } = req.query
+  const { startDate, endDate, limit, offset = 0 } = req.query
   const records = await getWorkRecords(req.user.id, {
-    limit: parseInt(limit),
+    startDate,
+    endDate,
+    limit: limit ? parseInt(limit) : undefined,
     offset: parseInt(offset),
   })
   const total = await getWorkRecordsCount(req.user.id)

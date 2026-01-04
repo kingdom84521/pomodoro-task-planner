@@ -1,122 +1,97 @@
-import db from '../database/index.js'
+import { eq, and, desc, inArray } from 'drizzle-orm'
+import { getDb, tasks } from '../database/drizzle.js'
 
 /**
- * Create or update a task
- * @param {Object} taskData - Task data
- * @param {string} taskData.notion_page_id - Notion page ID
- * @param {string} taskData.title - Task title
- * @param {string} taskData.category - Task category
- * @param {string} taskData.priority - Task priority (高/中/低)
- * @param {number} taskData.estimated_pomodoros - Estimated pomodoros
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Created or updated task
+ * Convert task row from camelCase to snake_case for API compatibility
  */
-export async function createOrUpdateTask(taskData, userId) {
-  const {
-    notion_page_id,
-    title,
-    category,
-    priority,
-    estimated_pomodoros = 1,
-  } = taskData
-
-  // Check if task already exists for this user
-  const existing = await db.query(
-    'SELECT * FROM tasks WHERE notion_page_id = $1 AND user_id = $2',
-    [notion_page_id, userId]
-  )
-
-  let result
-
-  if (existing.rows.length > 0) {
-    // Update existing task
-    result = await db.query(
-      `UPDATE tasks
-       SET title = $1, category = $2, priority = $3,
-           estimated_pomodoros = $4, last_synced_at = NOW()
-       WHERE notion_page_id = $5 AND user_id = $6
-       RETURNING *`,
-      [title, category, priority, estimated_pomodoros, notion_page_id, userId]
-    )
-  } else {
-    // Insert new task
-    result = await db.query(
-      `INSERT INTO tasks
-       (notion_page_id, title, category, priority, estimated_pomodoros, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [notion_page_id, title, category, priority, estimated_pomodoros, userId]
-    )
+function toSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    user_id: row.userId,
+    title: row.title,
+    status: row.status,
+    resource_group_id: row.resourceGroupId,
+    scheduled_at: row.scheduledAt,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
   }
-
-  return result.rows[0]
 }
 
 /**
- * Get task by Notion page ID
- * @param {string} notionPageId - Notion page ID
+ * Create a simple task (for UI, not Notion sync)
+ * @param {Object} taskData - Task data
+ * @param {string} taskData.title - Task title
+ * @param {string} taskData.status - Task status (optional, defaults to '待處理')
+ * @param {number} taskData.resource_group_id - Resource group ID (optional)
+ * @param {Date|string} taskData.scheduled_at - Scheduled start time (optional)
+ * @param {number} userId - User ID
+ * @returns {Promise<Object>} Created task
+ */
+export async function createSimpleTask(taskData, userId) {
+  const {
+    title,
+    status = '待處理',
+    resource_group_id = null,
+    scheduled_at = null,
+  } = taskData
+
+  const db = await getDb()
+  const result = await db
+    .insert(tasks)
+    .values({
+      userId,
+      title,
+      status,
+      resourceGroupId: resource_group_id,
+      scheduledAt: scheduled_at ? new Date(scheduled_at) : null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning()
+
+  return toSnakeCase(result[0])
+}
+
+/**
+ * Get task by ID
+ * @param {number} taskId - Task ID
  * @param {number} userId - User ID
  * @returns {Promise<Object|null>} Task object or null if not found
  */
-export async function getTaskByNotionPageId(notionPageId, userId) {
-  const result = await db.query(
-    'SELECT * FROM tasks WHERE notion_page_id = $1 AND user_id = $2',
-    [notionPageId, userId]
-  )
+export async function getTaskById(taskId, userId) {
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
 
-  return result.rows.length > 0 ? result.rows[0] : null
+  return result.length > 0 ? toSnakeCase(result[0]) : null
 }
 
 /**
  * Update task status
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @param {string} status - New status
  * @param {number} userId - User ID
  * @returns {Promise<Object>} Updated task
  */
-export async function updateTaskStatus(notionPageId, status, userId) {
-  const result = await db.query(
-    `UPDATE tasks
-     SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE completed_at END
-     WHERE notion_page_id = $2 AND user_id = $3
-     RETURNING *`,
-    [status, notionPageId, userId]
-  )
+export async function updateTaskStatus(taskId, status, userId) {
+  const db = await getDb()
+  const result = await db
+    .update(tasks)
+    .set({
+      status,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
 
-  if (result.rows.length === 0) {
-    throw new Error(`Task not found: ${notionPageId}`)
+  if (result.length === 0) {
+    throw new Error(`Task not found: ${taskId}`)
   }
 
-  return result.rows[0]
-}
-
-/**
- * Increment completed pomodoros count
- * @param {string} notionPageId - Notion page ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated task
- */
-export async function incrementCompletedPomodoros(notionPageId, userId) {
-  const result = await db.query(
-    `UPDATE tasks
-     SET completed_pomodoros = completed_pomodoros + 1
-     WHERE notion_page_id = $1 AND user_id = $2
-     RETURNING *`,
-    [notionPageId, userId]
-  )
-
-  if (result.rows.length === 0) {
-    throw new Error(`Task not found: ${notionPageId}`)
-  }
-
-  const task = result.rows[0]
-
-  // Auto-complete if all pomodoros are done
-  if (task.completed_pomodoros >= task.estimated_pomodoros) {
-    return await updateTaskStatus(notionPageId, 'completed', userId)
-  }
-
-  return task
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -129,50 +104,78 @@ export async function incrementCompletedPomodoros(notionPageId, userId) {
  */
 export async function getAllTasks(options = {}, userId) {
   const { status, limit } = options
+  const db = await getDb()
 
-  let query = 'SELECT * FROM tasks WHERE user_id = $1'
-  const params = [userId]
+  let query = db.select().from(tasks).where(eq(tasks.userId, userId))
 
   if (status) {
-    query += ' AND status = $2'
-    params.push(status)
+    query = db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.userId, userId), eq(tasks.status, status)))
   }
 
-  query += ' ORDER BY created_at DESC'
+  let result = await query.orderBy(desc(tasks.createdAt))
 
   if (limit) {
-    query += ` LIMIT $${params.length + 1}`
-    params.push(limit)
+    result = result.slice(0, limit)
   }
 
-  const result = await db.query(query, params)
-  return result.rows
+  return result.map(toSnakeCase)
 }
 
 /**
- * Create a simple task (for UI, not Notion sync)
- * @param {Object} taskData - Task data
+ * Update a simple task
+ * @param {number} taskId - Task ID
+ * @param {Object} taskData - Task data to update
  * @param {string} taskData.title - Task title
- * @param {string} taskData.status - Task status (optional, defaults to '待處理')
- * @param {number} taskData.resource_group_id - Resource group ID (optional)
+ * @param {string} taskData.status - Task status
+ * @param {number} taskData.resource_group_id - Resource group ID
+ * @param {Date|string|null} taskData.scheduled_at - Scheduled start time
  * @param {number} userId - User ID
- * @returns {Promise<Object>} Created task
+ * @returns {Promise<Object>} Updated task
  */
-export async function createSimpleTask(taskData, userId) {
-  const {
-    title,
-    status = '待處理',
-    resource_group_id = null,
-  } = taskData
+export async function updateSimpleTask(taskId, taskData, userId) {
+  const { title, status, resource_group_id, scheduled_at } = taskData
 
-  const result = await db.query(
-    `INSERT INTO tasks (user_id, title, status, resource_group_id)
-     VALUES ($1, $2, $3, $4)
-     RETURNING *`,
-    [userId, title, status, resource_group_id]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(tasks)
+    .set({
+      title,
+      status,
+      resourceGroupId: resource_group_id,
+      scheduledAt: scheduled_at ? new Date(scheduled_at) : null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
 
-  return result.rows[0]
+  if (result.length === 0) {
+    throw new Error(`Task not found: ${taskId}`)
+  }
+
+  return toSnakeCase(result[0])
+}
+
+/**
+ * Delete a simple task
+ * @param {number} taskId - Task ID
+ * @param {number} userId - User ID
+ * @returns {Promise<Object>} Deleted task
+ */
+export async function deleteSimpleTask(taskId, userId) {
+  const db = await getDb()
+  const result = await db
+    .delete(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
+    throw new Error(`Task not found: ${taskId}`)
+  }
+
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -181,19 +184,111 @@ export async function createSimpleTask(taskData, userId) {
  * @returns {Promise<Array>} Array of tasks
  */
 export async function getSimpleTasks(userId) {
-  const result = await db.query(
-    `SELECT * FROM tasks WHERE user_id = $1 ORDER BY created_at DESC`,
-    [userId]
-  )
-  return result.rows
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.userId, userId))
+    .orderBy(desc(tasks.createdAt))
+
+  return result.map(toSnakeCase)
+}
+
+/**
+ * Get tasks by status list
+ * @param {number} userId - User ID
+ * @param {string[]} statuses - Array of status values
+ * @returns {Promise<Array>} Array of tasks
+ */
+export async function getTasksByStatuses(userId, statuses) {
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.userId, userId), inArray(tasks.status, statuses)))
+    .orderBy(tasks.id)
+
+  return result.map(toSnakeCase)
+}
+
+/**
+ * Create or update a task (legacy API compatibility)
+ * @param {Object} taskData - Task data
+ * @param {number} taskData.id - Task ID (for update, optional)
+ * @param {string} taskData.title - Task title
+ * @param {string} taskData.category - Category (maps to resource_group_id)
+ * @param {string} taskData.priority - Priority level
+ * @param {number} taskData.estimated_pomodoros - Estimated pomodoros
+ * @param {number} userId - User ID
+ * @returns {Promise<Object>} Created or updated task
+ */
+export async function createOrUpdateTask(taskData, userId) {
+  const { id, title, category, priority, estimated_pomodoros } = taskData
+  const db = await getDb()
+
+  if (id) {
+    // Update existing task
+    const result = await db
+      .update(tasks)
+      .set({
+        title,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)))
+      .returning()
+
+    if (result.length === 0) {
+      throw new Error(`Task not found: ${id}`)
+    }
+
+    return toSnakeCase(result[0])
+  } else {
+    // Create new task
+    const result = await db
+      .insert(tasks)
+      .values({
+        userId,
+        title,
+        status: '待處理',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning()
+
+    return toSnakeCase(result[0])
+  }
+}
+
+/**
+ * Increment completed pomodoros count (legacy API compatibility)
+ * Note: The current schema doesn't have completed_pomodoros field
+ * This is a stub that returns the task unchanged
+ * @param {number} taskId - Task ID
+ * @returns {Promise<Object>} Task object
+ */
+export async function incrementCompletedPomodoros(taskId) {
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+
+  if (result.length === 0) {
+    throw new Error(`Task not found: ${taskId}`)
+  }
+
+  return toSnakeCase(result[0])
 }
 
 export default {
-  createOrUpdateTask,
-  getTaskByNotionPageId,
-  updateTaskStatus,
-  incrementCompletedPomodoros,
-  getAllTasks,
   createSimpleTask,
+  createOrUpdateTask,
+  getTaskById,
+  updateTaskStatus,
+  getAllTasks,
+  updateSimpleTask,
+  deleteSimpleTask,
   getSimpleTasks,
+  getTasksByStatuses,
+  incrementCompletedPomodoros,
 }

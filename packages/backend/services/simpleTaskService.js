@@ -1,4 +1,5 @@
-import db from '../database/index.js'
+import { eq, and, asc, gte, sql, inArray } from 'drizzle-orm'
+import { getDb, tasks, resourceGroups, workRecords } from '../database/drizzle.js'
 import config from '../config/index.js'
 
 const PERIOD_WEIGHTS = {
@@ -19,6 +20,23 @@ const PERIOD_DAYS = {
   '30D': 30,
   '90D': 90,
   '6M': 180,
+}
+
+/**
+ * Convert task row to snake_case
+ */
+function taskToSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    user_id: row.userId,
+    title: row.title,
+    status: row.status,
+    resource_group_id: row.resourceGroupId,
+    scheduled_at: row.scheduledAt,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
 }
 
 /**
@@ -83,19 +101,20 @@ function calculateTaskPriorityScore(task, resourceStats) {
  * @returns {Promise<Object>} Resource statistics
  */
 async function calculateResourceStats(userId) {
+  const db = await getDb()
+
   // Get resource groups
-  const groupsResult = await db.query(
-    'SELECT * FROM resource_groups WHERE user_id = $1',
-    [userId]
-  )
-  const groups = groupsResult.rows
+  const groups = await db
+    .select()
+    .from(resourceGroups)
+    .where(eq(resourceGroups.userId, userId))
 
   // Build group limits
   const groupLimits = {}
   for (const group of groups) {
     groupLimits[group.id] = {
-      limit: group.percentage_limit,
-      remaining6M: group.percentage_limit,
+      limit: group.percentageLimit,
+      remaining6M: group.percentageLimit,
       warning: false,
     }
   }
@@ -108,39 +127,40 @@ async function calculateResourceStats(userId) {
     const startDate = new Date(now)
     startDate.setDate(startDate.getDate() - days)
 
-    // Get total duration in this period
-    const totalResult = await db.query(
-      `SELECT COALESCE(SUM(duration), 0) as total
-       FROM work_records
-       WHERE user_id = $1 AND completed_at >= $2`,
-      [userId, startDate]
-    )
-    const totalDuration = parseInt(totalResult.rows[0].total, 10)
+    // Get all work records in this period
+    const records = await db
+      .select()
+      .from(workRecords)
+      .where(and(
+        eq(workRecords.userId, userId),
+        gte(workRecords.completedAt, startDate)
+      ))
 
-    // Get duration per resource group
-    const groupResult = await db.query(
-      `SELECT resource_group_id, COALESCE(SUM(duration), 0) as total
-       FROM work_records
-       WHERE user_id = $1 AND completed_at >= $2 AND resource_group_id IS NOT NULL
-       GROUP BY resource_group_id`,
-      [userId, startDate]
-    )
+    // Calculate total duration
+    const totalDuration = records.reduce((sum, r) => sum + (r.duration || 0), 0)
+
+    // Calculate duration per resource group
+    const groupDurations = {}
+    for (const record of records) {
+      if (record.resourceGroupId) {
+        groupDurations[record.resourceGroupId] = (groupDurations[record.resourceGroupId] || 0) + (record.duration || 0)
+      }
+    }
 
     periods[period] = { groups: {} }
 
-    for (const row of groupResult.rows) {
-      const groupDuration = parseInt(row.total, 10)
+    for (const [groupId, duration] of Object.entries(groupDurations)) {
       const percentage = totalDuration > 0
-        ? (groupDuration / totalDuration) * 100
+        ? (duration / totalDuration) * 100
         : 0
 
-      periods[period].groups[row.resource_group_id] = { percentage }
+      periods[period].groups[groupId] = { percentage }
 
       // Update 6M remaining for half-year period
-      if (period === '6M' && groupLimits[row.resource_group_id]) {
-        const limit = groupLimits[row.resource_group_id].limit
-        groupLimits[row.resource_group_id].remaining6M = limit - percentage
-        groupLimits[row.resource_group_id].warning = percentage > limit
+      if (period === '6M' && groupLimits[groupId]) {
+        const limit = groupLimits[groupId].limit
+        groupLimits[groupId].remaining6M = limit - percentage
+        groupLimits[groupId].warning = percentage > limit
       }
     }
   }
@@ -155,24 +175,27 @@ async function calculateResourceStats(userId) {
  * @returns {Promise<Array>} Ordered tasks
  */
 export async function getOrderedTasks(userId, order = 'id') {
+  const db = await getDb()
   const activeStatuses = getActiveStatuses()
-  const placeholders = activeStatuses.map((_, i) => `$${i + 2}`).join(', ')
 
   // Get active tasks
-  const result = await db.query(
-    `SELECT * FROM tasks
-     WHERE user_id = $1 AND status IN (${placeholders})
-     ORDER BY id`,
-    [userId, ...activeStatuses]
-  )
-  let tasks = result.rows
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(and(
+      eq(tasks.userId, userId),
+      inArray(tasks.status, activeStatuses)
+    ))
+    .orderBy(asc(tasks.id))
+
+  let taskList = result.map(taskToSnakeCase)
 
   if (order === 'id') {
-    return tasks
+    return taskList
   }
 
   if (order === 'category') {
-    return tasks.sort((a, b) => {
+    return taskList.sort((a, b) => {
       if (a.resource_group_id === null) return 1
       if (b.resource_group_id === null) return -1
       return a.resource_group_id - b.resource_group_id
@@ -183,7 +206,7 @@ export async function getOrderedTasks(userId, order = 'id') {
     const resourceStats = await calculateResourceStats(userId)
 
     // Calculate priority score for each task
-    const tasksWithScore = tasks.map(task => ({
+    const tasksWithScore = taskList.map(task => ({
       ...task,
       __priorityScore: calculateTaskPriorityScore(task, resourceStats),
     }))
@@ -195,7 +218,7 @@ export async function getOrderedTasks(userId, order = 'id') {
     return tasksWithScore.map(({ __priorityScore, ...task }) => task)
   }
 
-  return tasks
+  return taskList
 }
 
 export default {

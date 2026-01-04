@@ -1,24 +1,69 @@
-import db from '../database/index.js'
+import { eq, and, desc, count, gte, lte } from 'drizzle-orm'
+import { getDb, workRecords } from '../database/drizzle.js'
+import { updateDailyAnalytics, formatDate } from './dailyAnalyticsService.js'
+
+/**
+ * Convert work record row from camelCase to snake_case for API compatibility
+ */
+function toSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    user_id: row.userId,
+    task_id: row.taskId,
+    task_name: row.taskName,
+    duration: row.duration,
+    resource_group_id: row.resourceGroupId,
+    completed_at: row.completedAt,
+    created_at: row.createdAt,
+  }
+}
 
 /**
  * Get all work records for a user
  * @param {number} userId - User ID
  * @param {Object} options - Query options
- * @param {number} options.limit - Maximum number of records to return
+ * @param {string} options.startDate - Start date (YYYY-MM-DD), inclusive
+ * @param {string} options.endDate - End date (YYYY-MM-DD), inclusive
+ * @param {number} options.limit - Maximum number of records to return (optional, only used if no date range)
  * @param {number} options.offset - Number of records to skip
  * @returns {Promise<Array>} Array of work records
  */
 export async function getWorkRecords(userId, options = {}) {
-  const { limit = 50, offset = 0 } = options
+  const { startDate, endDate, limit, offset = 0 } = options
 
-  const result = await db.query(
-    `SELECT * FROM work_records
-     WHERE user_id = $1
-     ORDER BY completed_at DESC
-     LIMIT $2 OFFSET $3`,
-    [userId, limit, offset]
-  )
-  return result.rows
+  const db = await getDb()
+
+  // Build where conditions
+  const conditions = [eq(workRecords.userId, userId)]
+
+  if (startDate) {
+    // Start of the day
+    const startDateTime = new Date(`${startDate}T00:00:00`)
+    conditions.push(gte(workRecords.completedAt, startDateTime))
+  }
+
+  if (endDate) {
+    // End of the day (23:59:59.999)
+    const endDateTime = new Date(`${endDate}T23:59:59.999`)
+    conditions.push(lte(workRecords.completedAt, endDateTime))
+  }
+
+  let query = db
+    .select()
+    .from(workRecords)
+    .where(and(...conditions))
+    .orderBy(desc(workRecords.completedAt))
+    .offset(offset)
+
+  // Only apply limit if provided (for backward compatibility)
+  if (limit) {
+    query = query.limit(limit)
+  }
+
+  const result = await query
+
+  return result.map(toSnakeCase)
 }
 
 /**
@@ -28,11 +73,13 @@ export async function getWorkRecords(userId, options = {}) {
  * @returns {Promise<Object|null>} Work record or null
  */
 export async function getWorkRecordById(recordId, userId) {
-  const result = await db.query(
-    `SELECT * FROM work_records WHERE id = $1 AND user_id = $2`,
-    [recordId, userId]
-  )
-  return result.rows[0] || null
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(workRecords)
+    .where(and(eq(workRecords.id, recordId), eq(workRecords.userId, userId)))
+
+  return result.length > 0 ? toSnakeCase(result[0]) : null
 }
 
 /**
@@ -49,14 +96,26 @@ export async function getWorkRecordById(recordId, userId) {
 export async function createWorkRecord(recordData, userId) {
   const { task_id, task_name, duration, resource_group_id, completed_at } = recordData
 
-  const result = await db.query(
-    `INSERT INTO work_records (user_id, task_id, task_name, duration, resource_group_id, completed_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING *`,
-    [userId, task_id || null, task_name, duration, resource_group_id || null, completed_at || new Date()]
-  )
+  const db = await getDb()
+  const completedDate = completed_at ? new Date(completed_at) : new Date()
 
-  return result.rows[0]
+  const result = await db
+    .insert(workRecords)
+    .values({
+      userId,
+      taskId: task_id || null,
+      taskName: task_name,
+      duration,
+      resourceGroupId: resource_group_id || null,
+      completedAt: completedDate,
+      createdAt: new Date(),
+    })
+    .returning()
+
+  // Trigger daily analytics update (non-blocking)
+  updateDailyAnalytics(userId, formatDate(completedDate)).catch(console.error)
+
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -72,19 +131,44 @@ export async function createWorkRecord(recordData, userId) {
 export async function updateWorkRecord(recordId, recordData, userId) {
   const { task_name, duration, completed_at } = recordData
 
-  const result = await db.query(
-    `UPDATE work_records
-     SET task_name = $1, duration = $2, completed_at = $3
-     WHERE id = $4 AND user_id = $5
-     RETURNING *`,
-    [task_name, duration, completed_at, recordId, userId]
-  )
+  const db = await getDb()
 
-  if (result.rows.length === 0) {
+  // Get original record to check if date changed
+  const original = await db
+    .select()
+    .from(workRecords)
+    .where(and(eq(workRecords.id, recordId), eq(workRecords.userId, userId)))
+    .limit(1)
+
+  const completedDate = completed_at ? new Date(completed_at) : new Date()
+
+  const result = await db
+    .update(workRecords)
+    .set({
+      taskName: task_name,
+      duration,
+      completedAt: completedDate,
+    })
+    .where(and(eq(workRecords.id, recordId), eq(workRecords.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
     throw new Error('Work record not found')
   }
 
-  return result.rows[0]
+  // Trigger daily analytics update for new date (non-blocking)
+  updateDailyAnalytics(userId, formatDate(completedDate)).catch(console.error)
+
+  // If date changed, also update the old date
+  if (original.length > 0 && original[0].completedAt) {
+    const oldDate = formatDate(new Date(original[0].completedAt))
+    const newDate = formatDate(completedDate)
+    if (oldDate !== newDate) {
+      updateDailyAnalytics(userId, oldDate).catch(console.error)
+    }
+  }
+
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -94,18 +178,32 @@ export async function updateWorkRecord(recordId, recordData, userId) {
  * @returns {Promise<Object>} Deleted work record
  */
 export async function deleteWorkRecord(recordId, userId) {
-  const result = await db.query(
-    `DELETE FROM work_records
-     WHERE id = $1 AND user_id = $2
-     RETURNING *`,
-    [recordId, userId]
-  )
+  const db = await getDb()
 
-  if (result.rows.length === 0) {
+  // Get the record first to know the date
+  const original = await db
+    .select()
+    .from(workRecords)
+    .where(and(eq(workRecords.id, recordId), eq(workRecords.userId, userId)))
+    .limit(1)
+
+  const result = await db
+    .delete(workRecords)
+    .where(and(eq(workRecords.id, recordId), eq(workRecords.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
     throw new Error('Work record not found')
   }
 
-  return result.rows[0]
+  // Trigger daily analytics update for the deleted record's date (non-blocking)
+  if (original.length > 0 && original[0].completedAt) {
+    updateDailyAnalytics(userId, formatDate(new Date(original[0].completedAt))).catch(
+      console.error
+    )
+  }
+
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -114,11 +212,13 @@ export async function deleteWorkRecord(recordId, userId) {
  * @returns {Promise<number>} Total count
  */
 export async function getWorkRecordsCount(userId) {
-  const result = await db.query(
-    `SELECT COUNT(*) as count FROM work_records WHERE user_id = $1`,
-    [userId]
-  )
-  return parseInt(result.rows[0].count, 10)
+  const db = await getDb()
+  const result = await db
+    .select({ count: count() })
+    .from(workRecords)
+    .where(eq(workRecords.userId, userId))
+
+  return result[0].count
 }
 
 export default {

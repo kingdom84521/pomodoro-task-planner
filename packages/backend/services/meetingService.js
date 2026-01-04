@@ -1,5 +1,46 @@
-import db from '../database/index.js'
+import { eq, and, asc } from 'drizzle-orm'
+import { getDb, meetings, meetingInstances } from '../database/drizzle.js'
 import { shouldRunToday } from './routineTaskService.js'
+import { updateDailyAnalytics } from './dailyAnalyticsService.js'
+
+/**
+ * Convert meeting row to snake_case
+ */
+function meetingToSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    user_id: row.userId,
+    title: row.title,
+    meeting_type: row.meetingType,
+    recurrence_rule: row.recurrenceRule,
+    scheduled_time: row.scheduledTime,
+    scheduled_date: row.scheduledDate,
+    is_active: row.isActive,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
+}
+
+/**
+ * Convert meeting instance row to snake_case
+ */
+function instanceToSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    meeting_id: row.meetingId,
+    user_id: row.userId,
+    scheduled_date: row.scheduledDate,
+    scheduled_time: row.scheduledTime,
+    status: row.status,
+    started_at: row.startedAt,
+    ended_at: row.endedAt,
+    actual_duration: row.actualDuration,
+    is_ad_hoc: row.isAdHoc,
+    created_at: row.createdAt,
+  }
+}
 
 /**
  * Get all meeting definitions for a user (with duration stats)
@@ -7,54 +48,64 @@ import { shouldRunToday } from './routineTaskService.js'
  * @returns {Promise<Array>} Array of meetings with duration stats
  */
 export async function getMeetings(userId) {
-  // Get meetings with duration stats from completed instances
-  const result = await db.query(
-    `SELECT m.*,
-       COALESCE(stats.total_duration, 0) as total_duration,
-       COALESCE(stats.avg_duration, 0) as avg_duration,
-       COALESCE(stats.completed_count, 0) as completed_count
-     FROM meetings m
-     LEFT JOIN (
-       SELECT meeting_id,
-         SUM(actual_duration) as total_duration,
-         AVG(actual_duration) as avg_duration,
-         COUNT(*) as completed_count
-       FROM meeting_instances
-       WHERE status = 'completed' AND actual_duration IS NOT NULL
-       GROUP BY meeting_id
-     ) stats ON m.id = stats.meeting_id
-     WHERE m.user_id = $1
-     ORDER BY m.id`,
-    [userId]
-  )
-  return result.rows
+  const db = await getDb()
+
+  // Get all meetings
+  const meetingsResult = await db
+    .select()
+    .from(meetings)
+    .where(eq(meetings.userId, userId))
+    .orderBy(asc(meetings.id))
+
+  // Get all completed instances for stats calculation
+  const instancesResult = await db
+    .select()
+    .from(meetingInstances)
+    .where(eq(meetingInstances.status, 'completed'))
+
+  // Calculate stats for each meeting
+  return meetingsResult.map(meeting => {
+    const completedInstances = instancesResult.filter(
+      inst => inst.meetingId === meeting.id && inst.actualDuration !== null
+    )
+
+    // Total duration includes all instances (including ad-hoc)
+    const totalDuration = completedInstances.reduce(
+      (sum, inst) => sum + (inst.actualDuration || 0),
+      0
+    )
+
+    // Completed count excludes ad-hoc instances (for average calculation)
+    const scheduledInstances = completedInstances.filter(inst => !inst.isAdHoc)
+    const completedCount = scheduledInstances.length
+
+    // Average = total / scheduled count (not ad-hoc count)
+    const avgDuration = completedCount > 0 ? totalDuration / completedCount : 0
+
+    return {
+      ...meetingToSnakeCase(meeting),
+      total_duration: totalDuration,
+      avg_duration: avgDuration,
+      completed_count: completedCount,
+    }
+  })
 }
 
 /**
  * Get a single meeting by ID
- * @param {number} id - Meeting ID
- * @param {number} userId - User ID
- * @returns {Promise<Object|null>} Meeting or null
  */
 export async function getMeetingById(id, userId) {
-  const result = await db.query(
-    'SELECT * FROM meetings WHERE id = $1 AND user_id = $2',
-    [id, userId]
-  )
-  return result.rows.length > 0 ? result.rows[0] : null
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(meetings)
+    .where(and(eq(meetings.id, id), eq(meetings.userId, userId)))
+
+  return result.length > 0 ? meetingToSnakeCase(result[0]) : null
 }
 
 /**
  * Create a new meeting
- * @param {Object} data - Meeting data
- * @param {string} data.title - Meeting title
- * @param {string} data.meeting_type - 'recurring' or 'one-time'
- * @param {Object|null} data.recurrence_rule - Recurrence rule (for recurring meetings)
- * @param {string} data.scheduled_time - Scheduled start time (HH:mm)
- * @param {string|null} data.scheduled_date - Scheduled date (for one-time meetings)
- * @param {boolean} data.is_active - Whether the meeting is active
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Created meeting
  */
 export async function createMeeting(data, userId) {
   const {
@@ -66,30 +117,27 @@ export async function createMeeting(data, userId) {
     is_active = true,
   } = data
 
-  const result = await db.query(
-    `INSERT INTO meetings (user_id, title, meeting_type, recurrence_rule, scheduled_time, scheduled_date, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING *`,
-    [
+  const db = await getDb()
+  const result = await db
+    .insert(meetings)
+    .values({
       userId,
       title,
-      meeting_type,
-      recurrence_rule ? JSON.stringify(recurrence_rule) : null,
-      scheduled_time,
-      scheduled_date,
-      is_active,
-    ]
-  )
+      meetingType: meeting_type,
+      recurrenceRule: recurrence_rule,
+      scheduledTime: scheduled_time,
+      scheduledDate: scheduled_date,
+      isActive: is_active,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning()
 
-  return result.rows[0]
+  return meetingToSnakeCase(result[0])
 }
 
 /**
  * Update an existing meeting
- * @param {number} id - Meeting ID
- * @param {Object} data - Updated data
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated meeting
  */
 export async function updateMeeting(id, data, userId) {
   const {
@@ -101,106 +149,113 @@ export async function updateMeeting(id, data, userId) {
     is_active,
   } = data
 
-  const result = await db.query(
-    `UPDATE meetings
-     SET title = $1, meeting_type = $2, recurrence_rule = $3, scheduled_time = $4, scheduled_date = $5, is_active = $6
-     WHERE id = $7 AND user_id = $8
-     RETURNING *`,
-    [
+  const db = await getDb()
+  const result = await db
+    .update(meetings)
+    .set({
       title,
-      meeting_type,
-      recurrence_rule ? JSON.stringify(recurrence_rule) : null,
-      scheduled_time,
-      scheduled_date,
-      is_active,
-      id,
-      userId,
-    ]
-  )
+      meetingType: meeting_type,
+      recurrenceRule: recurrence_rule,
+      scheduledTime: scheduled_time,
+      scheduledDate: scheduled_date,
+      isActive: is_active,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(meetings.id, id), eq(meetings.userId, userId)))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Meeting not found: ${id}`)
   }
 
-  return result.rows[0]
+  return meetingToSnakeCase(result[0])
 }
 
 /**
  * Delete a meeting
- * @param {number} id - Meeting ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Deleted meeting
  */
 export async function deleteMeeting(id, userId) {
-  const result = await db.query(
-    'DELETE FROM meetings WHERE id = $1 AND user_id = $2 RETURNING *',
-    [id, userId]
-  )
+  const db = await getDb()
 
-  if (result.rows.length === 0) {
+  // Delete all instances first
+  await db
+    .delete(meetingInstances)
+    .where(eq(meetingInstances.meetingId, id))
+
+  // Then delete the meeting
+  const result = await db
+    .delete(meetings)
+    .where(and(eq(meetings.id, id), eq(meetings.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
     throw new Error(`Meeting not found: ${id}`)
   }
 
-  return result.rows[0]
+  return meetingToSnakeCase(result[0])
 }
 
 /**
  * Get or create today's meeting instances
- * @param {number} userId - User ID
- * @returns {Promise<Array>} Array of meeting instances with meeting info
  */
 export async function getTodayMeetings(userId) {
   const today = new Date().toISOString().split('T')[0]
+  const db = await getDb()
 
   // Get all active meetings
-  const meetings = await db.query(
-    'SELECT * FROM meetings WHERE user_id = $1 AND is_active = true',
-    [userId]
-  )
+  const meetingsResult = await db
+    .select()
+    .from(meetings)
+    .where(and(eq(meetings.userId, userId), eq(meetings.isActive, true)))
 
   const instances = []
 
-  for (const meeting of meetings.rows) {
+  for (const meeting of meetingsResult) {
     let shouldInclude = false
 
-    if (meeting.meeting_type === 'one-time') {
-      // One-time meeting: check if scheduled_date is today
-      shouldInclude = meeting.scheduled_date === today
+    if (meeting.meetingType === 'one-time') {
+      shouldInclude = meeting.scheduledDate === today
     } else {
-      // Recurring meeting: check recurrence rule
-      shouldInclude = shouldRunToday(meeting.recurrence_rule, new Date())
+      shouldInclude = shouldRunToday(meeting.recurrenceRule, new Date())
     }
 
     if (!shouldInclude) continue
 
     // Check if instance already exists for today
-    const existingInstance = await db.query(
-      'SELECT * FROM meeting_instances WHERE meeting_id = $1 AND scheduled_date = $2',
-      [meeting.id, today]
-    )
+    const existingInstances = await db
+      .select()
+      .from(meetingInstances)
+      .where(and(
+        eq(meetingInstances.meetingId, meeting.id),
+        eq(meetingInstances.scheduledDate, today)
+      ))
 
     let instance
-    if (existingInstance.rows.length > 0) {
-      instance = existingInstance.rows[0]
+    if (existingInstances.length > 0) {
+      instance = existingInstances[0]
     } else {
       // Create new instance
-      const newInstance = await db.query(
-        `INSERT INTO meeting_instances (meeting_id, user_id, scheduled_date, scheduled_time, status)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING *`,
-        [meeting.id, userId, today, meeting.scheduled_time, 'pending']
-      )
-      instance = newInstance.rows[0]
+      const newInstances = await db
+        .insert(meetingInstances)
+        .values({
+          meetingId: meeting.id,
+          userId,
+          scheduledDate: today,
+          scheduledTime: meeting.scheduledTime,
+          status: 'pending',
+          createdAt: new Date(),
+        })
+        .returning()
+      instance = newInstances[0]
     }
 
-    // Combine instance with meeting info
     instances.push({
-      ...instance,
+      ...instanceToSnakeCase(instance),
       meeting: {
         id: meeting.id,
         title: meeting.title,
-        meeting_type: meeting.meeting_type,
-        recurrence_rule: meeting.recurrence_rule,
+        meeting_type: meeting.meetingType,
+        recurrence_rule: meeting.recurrenceRule,
       },
     })
   }
@@ -213,9 +268,6 @@ export async function getTodayMeetings(userId) {
 
 /**
  * Get upcoming meetings within N minutes
- * @param {number} userId - User ID
- * @param {number} minutes - Minutes ahead to check (default: 5)
- * @returns {Promise<Array>} Array of upcoming meeting instances
  */
 export async function getUpcomingMeetings(userId, minutes = 5) {
   const todayMeetings = await getTodayMeetings(userId)
@@ -223,7 +275,6 @@ export async function getUpcomingMeetings(userId, minutes = 5) {
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
 
   return todayMeetings.filter((instance) => {
-    // Skip already completed or in-progress meetings
     if (instance.status === 'completed' || instance.status === 'in_progress') {
       return false
     }
@@ -231,7 +282,6 @@ export async function getUpcomingMeetings(userId, minutes = 5) {
     const [hours, mins] = instance.scheduled_time.split(':').map(Number)
     const meetingMinutes = hours * 60 + mins
 
-    // Meeting is upcoming if it's within the next N minutes
     const diff = meetingMinutes - currentMinutes
     return diff >= 0 && diff <= minutes
   })
@@ -239,8 +289,6 @@ export async function getUpcomingMeetings(userId, minutes = 5) {
 
 /**
  * Get meetings that are past their scheduled time but not started
- * @param {number} userId - User ID
- * @returns {Promise<Array>} Array of overdue meeting instances
  */
 export async function getOverdueMeetings(userId) {
   const todayMeetings = await getTodayMeetings(userId)
@@ -248,7 +296,6 @@ export async function getOverdueMeetings(userId) {
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
 
   return todayMeetings.filter((instance) => {
-    // Only pending meetings
     if (instance.status !== 'pending') {
       return false
     }
@@ -256,89 +303,203 @@ export async function getOverdueMeetings(userId) {
     const [hours, mins] = instance.scheduled_time.split(':').map(Number)
     const meetingMinutes = hours * 60 + mins
 
-    // Meeting is overdue if scheduled time has passed
     return currentMinutes > meetingMinutes
   })
 }
 
 /**
  * Start a meeting
- * @param {number} instanceId - Meeting instance ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function startMeeting(instanceId, userId) {
-  const result = await db.query(
-    `UPDATE meeting_instances
-     SET status = $1, started_at = $2
-     WHERE id = $3 AND user_id = $4
-     RETURNING *`,
-    ['in_progress', new Date(), instanceId, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(meetingInstances)
+    .set({
+      status: 'in_progress',
+      startedAt: new Date(),
+    })
+    .where(and(
+      eq(meetingInstances.id, instanceId),
+      eq(meetingInstances.userId, userId)
+    ))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Meeting instance not found: ${instanceId}`)
   }
 
-  return result.rows[0]
+  return instanceToSnakeCase(result[0])
 }
 
 /**
  * End a meeting
- * @param {number} instanceId - Meeting instance ID
- * @param {number} actualDuration - Actual duration in seconds
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function endMeeting(instanceId, actualDuration, userId) {
-  // First get the instance to retrieve started_at
-  const existing = await db.query(
-    'SELECT * FROM meeting_instances WHERE id = $1 AND user_id = $2',
-    [instanceId, userId]
-  )
+  const db = await getDb()
 
-  if (existing.rows.length === 0) {
+  // First get the instance to retrieve started_at
+  const existing = await db
+    .select()
+    .from(meetingInstances)
+    .where(and(
+      eq(meetingInstances.id, instanceId),
+      eq(meetingInstances.userId, userId)
+    ))
+
+  if (existing.length === 0) {
     throw new Error(`Meeting instance not found: ${instanceId}`)
   }
 
-  const result = await db.query(
-    `UPDATE meeting_instances
-     SET status = $1, started_at = $2, ended_at = $3, actual_duration = $4
-     WHERE id = $5 AND user_id = $6
-     RETURNING *`,
-    [
-      'completed',
-      existing.rows[0].started_at,
-      new Date(),
+  const result = await db
+    .update(meetingInstances)
+    .set({
+      status: 'completed',
+      startedAt: existing[0].startedAt,
+      endedAt: new Date(),
       actualDuration,
-      instanceId,
-      userId,
-    ]
-  )
+    })
+    .where(and(
+      eq(meetingInstances.id, instanceId),
+      eq(meetingInstances.userId, userId)
+    ))
+    .returning()
 
-  return result.rows[0]
+  // Trigger daily analytics update for the meeting date (non-blocking)
+  updateDailyAnalytics(userId, result[0].scheduledDate).catch(console.error)
+
+  return instanceToSnakeCase(result[0])
 }
 
 /**
  * Skip a meeting
- * @param {number} instanceId - Meeting instance ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function skipMeeting(instanceId, userId) {
-  const result = await db.query(
-    `UPDATE meeting_instances
-     SET status = $1
-     WHERE id = $2 AND user_id = $3
-     RETURNING *`,
-    ['skipped', instanceId, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(meetingInstances)
+    .set({
+      status: 'skipped',
+    })
+    .where(and(
+      eq(meetingInstances.id, instanceId),
+      eq(meetingInstances.userId, userId)
+    ))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Meeting instance not found: ${instanceId}`)
   }
 
-  return result.rows[0]
+  return instanceToSnakeCase(result[0])
+}
+
+/**
+ * Start a meeting now (create ad-hoc instance and start it)
+ */
+export async function startMeetingNow(meetingId, userId) {
+  const meeting = await getMeetingById(meetingId, userId)
+  if (!meeting) {
+    throw new Error(`Meeting not found: ${meetingId}`)
+  }
+
+  const today = new Date().toISOString().split('T')[0]
+  const now = new Date()
+  const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+
+  const db = await getDb()
+  let instance
+
+  if (meeting.meeting_type === 'recurring') {
+    // For recurring meetings, always create a new ad-hoc instance
+    const newInstances = await db
+      .insert(meetingInstances)
+      .values({
+        meetingId,
+        userId,
+        scheduledDate: today,
+        scheduledTime: currentTime,
+        status: 'in_progress',
+        startedAt: now,
+        isAdHoc: true,
+        createdAt: new Date(),
+      })
+      .returning()
+    instance = newInstances[0]
+  } else {
+    // For one-time meetings, find or create today's instance
+    const existingInstances = await db
+      .select()
+      .from(meetingInstances)
+      .where(and(
+        eq(meetingInstances.meetingId, meetingId),
+        eq(meetingInstances.scheduledDate, today)
+      ))
+
+    if (existingInstances.length > 0) {
+      // Start existing instance
+      const updated = await db
+        .update(meetingInstances)
+        .set({
+          status: 'in_progress',
+          startedAt: now,
+        })
+        .where(and(
+          eq(meetingInstances.id, existingInstances[0].id),
+          eq(meetingInstances.userId, userId)
+        ))
+        .returning()
+      instance = updated[0]
+    } else {
+      // Create new ad-hoc instance for today
+      const newInstances = await db
+        .insert(meetingInstances)
+        .values({
+          meetingId,
+          userId,
+          scheduledDate: today,
+          scheduledTime: currentTime,
+          status: 'in_progress',
+          startedAt: now,
+          isAdHoc: true,
+          createdAt: new Date(),
+        })
+        .returning()
+      instance = newInstances[0]
+    }
+  }
+
+  return {
+    ...instanceToSnakeCase(instance),
+    meeting: {
+      id: meeting.id,
+      title: meeting.title,
+      meeting_type: meeting.meeting_type,
+      recurrence_rule: meeting.recurrence_rule,
+    },
+  }
+}
+
+/**
+ * Convert a one-time meeting to a recurring meeting
+ */
+export async function convertToRecurring(meetingId, userId) {
+  const meeting = await getMeetingById(meetingId, userId)
+  if (!meeting) {
+    throw new Error(`Meeting not found: ${meetingId}`)
+  }
+
+  if (meeting.meeting_type !== 'one-time') {
+    throw new Error(`Meeting is already recurring: ${meetingId}`)
+  }
+
+  return await updateMeeting(meetingId, {
+    title: meeting.title,
+    meeting_type: 'recurring',
+    recurrence_rule: { frequency: 'daily' },
+    scheduled_time: meeting.scheduled_time,
+    scheduled_date: null,
+    is_active: meeting.is_active,
+  }, userId)
 }
 
 export default {
@@ -353,4 +514,6 @@ export default {
   startMeeting,
   endMeeting,
   skipMeeting,
+  startMeetingNow,
+  convertToRecurring,
 }

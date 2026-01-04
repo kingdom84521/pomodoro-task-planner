@@ -9,7 +9,6 @@ import {
   completePomodoro,
   cancelPomodoro,
 } from '../services/pomodoroService.js'
-import { updateNotionCompletedPomodoros } from '../services/notionSyncService.js'
 
 const router = express.Router()
 
@@ -18,28 +17,28 @@ const router = express.Router()
  * Start a new pomodoro session
  */
 router.post('/start', asyncHandler(async (req, res) => {
-  const { notion_page_id, duration_minutes = 25 } = req.body
+  const { task_id, duration_minutes = 25 } = req.body
 
-  if (!notion_page_id) {
+  if (!task_id) {
     return res.status(400).json({
       success: false,
-      error: 'Missing required field: notion_page_id',
+      error: 'Missing required field: task_id',
     })
   }
 
-  const pomodoro = await startPomodoro(notion_page_id, duration_minutes)
+  const pomodoro = await startPomodoro(task_id, duration_minutes)
 
   res.json(successResponse(pomodoro))
 }))
 
 /**
- * GET /api/pomodoro/status/:notion_page_id
+ * GET /api/pomodoro/status/:task_id
  * Get current pomodoro status
  */
-router.get('/status/:notion_page_id', asyncHandler(async (req, res) => {
-  const { notion_page_id } = req.params
+router.get('/status/:task_id', asyncHandler(async (req, res) => {
+  const { task_id } = req.params
 
-  const status = await getPomodoroStatus(notion_page_id)
+  const status = await getPomodoroStatus(task_id)
 
   if (!status) {
     return res.json(successResponse(null, 'No active pomodoro'))
@@ -53,16 +52,16 @@ router.get('/status/:notion_page_id', asyncHandler(async (req, res) => {
  * Pause an active pomodoro
  */
 router.post('/pause', asyncHandler(async (req, res) => {
-  const { notion_page_id, elapsed_seconds } = req.body
+  const { task_id, elapsed_seconds } = req.body
 
-  if (!notion_page_id || elapsed_seconds === undefined) {
+  if (!task_id || elapsed_seconds === undefined) {
     return res.status(400).json({
       success: false,
-      error: 'Missing required fields: notion_page_id, elapsed_seconds',
+      error: 'Missing required fields: task_id, elapsed_seconds',
     })
   }
 
-  const result = await pausePomodoro(notion_page_id, elapsed_seconds)
+  const result = await pausePomodoro(task_id, elapsed_seconds)
 
   res.json(successResponse(result))
 }))
@@ -72,16 +71,16 @@ router.post('/pause', asyncHandler(async (req, res) => {
  * Resume a paused pomodoro
  */
 router.post('/resume', asyncHandler(async (req, res) => {
-  const { notion_page_id } = req.body
+  const { task_id } = req.body
 
-  if (!notion_page_id) {
+  if (!task_id) {
     return res.status(400).json({
       success: false,
-      error: 'Missing required field: notion_page_id',
+      error: 'Missing required field: task_id',
     })
   }
 
-  const result = await resumePomodoro(notion_page_id)
+  const result = await resumePomodoro(task_id)
 
   res.json(successResponse(result))
 }))
@@ -91,24 +90,16 @@ router.post('/resume', asyncHandler(async (req, res) => {
  * Complete a pomodoro session
  */
 router.post('/complete', asyncHandler(async (req, res) => {
-  const { notion_page_id, actual_duration_minutes = 25 } = req.body
+  const { task_id, actual_duration_minutes = 25 } = req.body
 
-  if (!notion_page_id) {
+  if (!task_id) {
     return res.status(400).json({
       success: false,
-      error: 'Missing required field: notion_page_id',
+      error: 'Missing required field: task_id',
     })
   }
 
-  const result = await completePomodoro(notion_page_id, actual_duration_minutes)
-
-  // Update Notion with new completed pomodoros count (async)
-  updateNotionCompletedPomodoros(
-    notion_page_id,
-    result.task.completed_pomodoros
-  ).catch(err => {
-    console.error('Error updating Notion completed pomodoros:', err)
-  })
+  const result = await completePomodoro(task_id, actual_duration_minutes)
 
   res.json(successResponse(result))
 }))
@@ -118,16 +109,16 @@ router.post('/complete', asyncHandler(async (req, res) => {
  * Cancel an active pomodoro
  */
 router.post('/cancel', asyncHandler(async (req, res) => {
-  const { notion_page_id } = req.body
+  const { task_id } = req.body
 
-  if (!notion_page_id) {
+  if (!task_id) {
     return res.status(400).json({
       success: false,
-      error: 'Missing required field: notion_page_id',
+      error: 'Missing required field: task_id',
     })
   }
 
-  const result = await cancelPomodoro(notion_page_id)
+  const result = await cancelPomodoro(task_id)
 
   res.json(successResponse(result))
 }))

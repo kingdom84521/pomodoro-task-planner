@@ -3,15 +3,15 @@ import { incrementCompletedPomodoros } from './taskService.js'
 
 /**
  * Start a new pomodoro session
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @param {number} durationMinutes - Pomodoro duration in minutes
  * @returns {Promise<Object>} Active pomodoro data
  */
-export async function startPomodoro(notionPageId, durationMinutes = 25) {
+export async function startPomodoro(taskId, durationMinutes = 25) {
   // Check if there's already an active pomodoro for this task
   const existing = await db.query(
-    'SELECT * FROM active_pomodoros WHERE notion_page_id = $1',
-    [notionPageId]
+    'SELECT * FROM active_pomodoros WHERE task_id = $1',
+    [taskId]
   )
 
   if (existing.rows.length > 0) {
@@ -20,12 +20,12 @@ export async function startPomodoro(notionPageId, durationMinutes = 25) {
 
   // Get task info
   const taskResult = await db.query(
-    'SELECT * FROM tasks WHERE notion_page_id = $1',
-    [notionPageId]
+    'SELECT * FROM tasks WHERE id = $1',
+    [taskId]
   )
 
   if (taskResult.rows.length === 0) {
-    throw new Error(`Task not found: ${notionPageId}`)
+    throw new Error(`Task not found: ${taskId}`)
   }
 
   const task = taskResult.rows[0]
@@ -33,10 +33,10 @@ export async function startPomodoro(notionPageId, durationMinutes = 25) {
   // Insert new active pomodoro
   const result = await db.query(
     `INSERT INTO active_pomodoros
-     (task_id, notion_page_id, started_at, total_duration_minutes, status)
-     VALUES ($1, $2, NOW(), $3, 'running')
+     (task_id, started_at, total_duration_minutes, status)
+     VALUES ($1, NOW(), $2, 'running')
      RETURNING *`,
-    [task.id, notionPageId, durationMinutes]
+    [task.id, durationMinutes]
   )
 
   return {
@@ -51,16 +51,16 @@ export async function startPomodoro(notionPageId, durationMinutes = 25) {
 
 /**
  * Get current pomodoro status
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @returns {Promise<Object|null>} Pomodoro status or null if not found
  */
-export async function getPomodoroStatus(notionPageId) {
+export async function getPomodoroStatus(taskId) {
   const result = await db.query(
     `SELECT ap.*, t.title, t.category, t.completed_pomodoros, t.estimated_pomodoros
      FROM active_pomodoros ap
      JOIN tasks t ON ap.task_id = t.id
-     WHERE ap.notion_page_id = $1`,
-    [notionPageId]
+     WHERE ap.task_id = $1`,
+    [taskId]
   )
 
   if (result.rows.length === 0) {
@@ -101,17 +101,17 @@ export async function getPomodoroStatus(notionPageId) {
 
 /**
  * Pause an active pomodoro
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @param {number} elapsedSeconds - Current elapsed seconds
  * @returns {Promise<Object>} Updated pomodoro status
  */
-export async function pausePomodoro(notionPageId, elapsedSeconds) {
+export async function pausePomodoro(taskId, elapsedSeconds) {
   const result = await db.query(
     `UPDATE active_pomodoros
      SET status = 'paused', paused_at = NOW(), elapsed_seconds = $1, updated_at = NOW()
-     WHERE notion_page_id = $2
+     WHERE task_id = $2
      RETURNING *`,
-    [elapsedSeconds, notionPageId]
+    [elapsedSeconds, taskId]
   )
 
   if (result.rows.length === 0) {
@@ -126,16 +126,16 @@ export async function pausePomodoro(notionPageId, elapsedSeconds) {
 
 /**
  * Resume a paused pomodoro
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @returns {Promise<Object>} Updated pomodoro status
  */
-export async function resumePomodoro(notionPageId) {
+export async function resumePomodoro(taskId) {
   const result = await db.query(
     `UPDATE active_pomodoros
      SET status = 'running', started_at = NOW(), updated_at = NOW()
-     WHERE notion_page_id = $1
+     WHERE task_id = $1
      RETURNING *`,
-    [notionPageId]
+    [taskId]
   )
 
   if (result.rows.length === 0) {
@@ -150,15 +150,15 @@ export async function resumePomodoro(notionPageId) {
 
 /**
  * Complete a pomodoro session
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @param {number} actualDurationMinutes - Actual duration in minutes
  * @returns {Promise<Object>} Completion result
  */
-export async function completePomodoro(notionPageId, actualDurationMinutes = 25) {
+export async function completePomodoro(taskId, actualDurationMinutes = 25) {
   // Get active pomodoro
   const active = await db.query(
-    'SELECT * FROM active_pomodoros WHERE notion_page_id = $1',
-    [notionPageId]
+    'SELECT * FROM active_pomodoros WHERE task_id = $1',
+    [taskId]
   )
 
   if (active.rows.length === 0) {
@@ -178,9 +178,9 @@ export async function completePomodoro(notionPageId, actualDurationMinutes = 25)
   // Insert completed session record
   await db.query(
     `INSERT INTO pomodoro_sessions
-     (task_id, notion_page_id, category, duration_minutes, started_at, completed_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())`,
-    [pomodoro.task_id, notionPageId, task.category, actualDurationMinutes, pomodoro.started_at]
+     (task_id, category, duration_minutes, started_at, completed_at)
+     VALUES ($1, $2, $3, $4, NOW())`,
+    [pomodoro.task_id, task.category, actualDurationMinutes, pomodoro.started_at]
   )
 
   // Delete active pomodoro
@@ -190,7 +190,7 @@ export async function completePomodoro(notionPageId, actualDurationMinutes = 25)
   )
 
   // Increment completed pomodoros count
-  const updatedTask = await incrementCompletedPomodoros(notionPageId)
+  const updatedTask = await incrementCompletedPomodoros(taskId)
 
   return {
     completed: true,
@@ -204,13 +204,13 @@ export async function completePomodoro(notionPageId, actualDurationMinutes = 25)
 
 /**
  * Cancel an active pomodoro
- * @param {string} notionPageId - Notion page ID
+ * @param {number} taskId - Task ID
  * @returns {Promise<Object>} Cancellation result
  */
-export async function cancelPomodoro(notionPageId) {
+export async function cancelPomodoro(taskId) {
   const result = await db.query(
-    'DELETE FROM active_pomodoros WHERE notion_page_id = $1 RETURNING *',
-    [notionPageId]
+    'DELETE FROM active_pomodoros WHERE task_id = $1 RETURNING *',
+    [taskId]
   )
 
   if (result.rows.length === 0) {

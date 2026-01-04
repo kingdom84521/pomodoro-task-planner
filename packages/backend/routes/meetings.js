@@ -13,6 +13,8 @@ import {
   startMeeting,
   endMeeting,
   skipMeeting,
+  startMeetingNow,
+  convertToRecurring,
 } from '../services/meetingService.js'
 
 const router = express.Router()
@@ -213,6 +215,26 @@ router.post('/instances/:id/skip', asyncHandler(async (req, res) => {
   const { id } = req.params
   const instance = await skipMeeting(parseInt(id), req.user.id)
   res.json(successResponse({ instance }))
+}))
+
+/**
+ * POST /api/meetings/:id/start-now
+ * Start a meeting now (create ad-hoc instance and start it)
+ */
+router.post('/:id/start-now', asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const instance = await startMeetingNow(parseInt(id), req.user.id)
+  res.json(successResponse({ instance }))
+}))
+
+/**
+ * POST /api/meetings/:id/convert-to-recurring
+ * Convert a one-time meeting to a recurring meeting
+ */
+router.post('/:id/convert-to-recurring', asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const meeting = await convertToRecurring(parseInt(id), req.user.id)
+  res.json(successResponse({ meeting }))
 }))
 
 export default router

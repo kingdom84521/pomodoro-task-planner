@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title VARCHAR(500) NOT NULL,
   status VARCHAR(50) NOT NULL DEFAULT '待處理',
   resource_group_id INTEGER REFERENCES resource_groups(id) ON DELETE SET NULL,
+  scheduled_at TIMESTAMP DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CHECK (status IN ('待處理', '進行中', '擱置中', '已完成', '已交接', '已封存', '已取消'))

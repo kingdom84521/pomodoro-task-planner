@@ -1,7 +1,7 @@
 import express from 'express'
 import { asyncHandler } from '../middleware/errorHandler.js'
 import { successResponse } from '../utils/responseFormatter.js'
-import { createSimpleTask } from '../services/taskService.js'
+import { createSimpleTask, updateSimpleTask, deleteSimpleTask } from '../services/taskService.js'
 import { getOrderedTasks } from '../services/simpleTaskService.js'
 
 const router = express.Router()
@@ -31,7 +31,7 @@ router.get('/', asyncHandler(async (req, res) => {
  * Create a new simple task
  */
 router.post('/', asyncHandler(async (req, res) => {
-  const { title, status, resource_group_id } = req.body
+  const { title, status, resource_group_id, scheduled_at } = req.body
 
   // Validate required fields
   if (!title) {
@@ -42,9 +42,36 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   const task = await createSimpleTask(
-    { title, status, resource_group_id },
+    { title, status, resource_group_id, scheduled_at },
     req.user.id
   )
+  res.json(successResponse({ task }))
+}))
+
+/**
+ * PUT /api/simple-tasks/:id
+ * Update an existing simple task
+ */
+router.put('/:id', asyncHandler(async (req, res) => {
+  const taskId = parseInt(req.params.id, 10)
+  const { title, status, resource_group_id, scheduled_at } = req.body
+
+  const task = await updateSimpleTask(
+    taskId,
+    { title, status, resource_group_id, scheduled_at },
+    req.user.id
+  )
+  res.json(successResponse({ task }))
+}))
+
+/**
+ * DELETE /api/simple-tasks/:id
+ * Delete a simple task
+ */
+router.delete('/:id', asyncHandler(async (req, res) => {
+  const taskId = parseInt(req.params.id, 10)
+
+  const task = await deleteSimpleTask(taskId, req.user.id)
   res.json(successResponse({ task }))
 }))
 

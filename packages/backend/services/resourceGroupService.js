@@ -1,4 +1,5 @@
-import db from '../database/index.js'
+import { eq, and, asc } from 'drizzle-orm'
+import { getDb, resourceGroups, tasks } from '../database/drizzle.js'
 
 /**
  * Get all resource groups for a user
@@ -6,11 +7,22 @@ import db from '../database/index.js'
  * @returns {Promise<Array>} Array of resource groups
  */
 export async function getResourceGroups(userId) {
-  const result = await db.query(
-    `SELECT * FROM resource_groups WHERE user_id = $1 ORDER BY created_at ASC`,
-    [userId]
-  )
-  return result.rows
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(resourceGroups)
+    .where(eq(resourceGroups.userId, userId))
+    .orderBy(asc(resourceGroups.createdAt))
+
+  // Convert to snake_case for API compatibility
+  return result.map(row => ({
+    id: row.id,
+    user_id: row.userId,
+    name: row.name,
+    percentage_limit: row.percentageLimit,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }))
 }
 
 /**
@@ -23,15 +35,28 @@ export async function getResourceGroups(userId) {
  */
 export async function createResourceGroup(groupData, userId) {
   const { name, percentage_limit } = groupData
+  const db = await getDb()
 
-  const result = await db.query(
-    `INSERT INTO resource_groups (user_id, name, percentage_limit)
-     VALUES ($1, $2, $3)
-     RETURNING *`,
-    [userId, name, percentage_limit]
-  )
+  const result = await db
+    .insert(resourceGroups)
+    .values({
+      userId,
+      name,
+      percentageLimit: percentage_limit,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning()
 
-  return result.rows[0]
+  const row = result[0]
+  return {
+    id: row.id,
+    user_id: row.userId,
+    name: row.name,
+    percentage_limit: row.percentageLimit,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
 }
 
 /**
@@ -45,20 +70,31 @@ export async function createResourceGroup(groupData, userId) {
  */
 export async function updateResourceGroup(groupId, groupData, userId) {
   const { name, percentage_limit } = groupData
+  const db = await getDb()
 
-  const result = await db.query(
-    `UPDATE resource_groups
-     SET name = $1, percentage_limit = $2, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $3 AND user_id = $4
-     RETURNING *`,
-    [name, percentage_limit, groupId, userId]
-  )
+  const result = await db
+    .update(resourceGroups)
+    .set({
+      name,
+      percentageLimit: percentage_limit,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(resourceGroups.id, groupId), eq(resourceGroups.userId, userId)))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error('Resource group not found')
   }
 
-  return result.rows[0]
+  const row = result[0]
+  return {
+    id: row.id,
+    user_id: row.userId,
+    name: row.name,
+    percentage_limit: row.percentageLimit,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
 }
 
 /**
@@ -68,18 +104,33 @@ export async function updateResourceGroup(groupId, groupData, userId) {
  * @returns {Promise<Object>} Deleted resource group
  */
 export async function deleteResourceGroup(groupId, userId) {
-  const result = await db.query(
-    `DELETE FROM resource_groups
-     WHERE id = $1 AND user_id = $2
-     RETURNING *`,
-    [groupId, userId]
-  )
+  const db = await getDb()
 
-  if (result.rows.length === 0) {
+  // First, set resource_group_id to null for all tasks that reference this group
+  await db
+    .update(tasks)
+    .set({ resourceGroupId: null })
+    .where(eq(tasks.resourceGroupId, groupId))
+
+  // Then delete the resource group
+  const result = await db
+    .delete(resourceGroups)
+    .where(and(eq(resourceGroups.id, groupId), eq(resourceGroups.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
     throw new Error('Resource group not found')
   }
 
-  return result.rows[0]
+  const row = result[0]
+  return {
+    id: row.id,
+    user_id: row.userId,
+    name: row.name,
+    percentage_limit: row.percentageLimit,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
 }
 
 export default {

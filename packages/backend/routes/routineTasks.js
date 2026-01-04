@@ -11,6 +11,7 @@ import {
   completeInstance,
   skipInstance,
   uncompleteInstance,
+  clearInstanceScheduledAt,
 } from '../services/routineTaskService.js'
 
 const router = express.Router()
@@ -56,7 +57,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
  * Create a new routine task
  */
 router.post('/', asyncHandler(async (req, res) => {
-  const { title, resource_group_id, recurrence_rule, is_active } = req.body
+  const { title, resource_group_id, recurrence_rule, is_active, starts_at } = req.body
 
   // Validate required fields
   if (!title) {
@@ -74,7 +75,7 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   const task = await createRoutineTask(
-    { title, resource_group_id, recurrence_rule, is_active },
+    { title, resource_group_id, recurrence_rule, is_active, starts_at },
     req.user.id
   )
   res.json(successResponse({ routine_task: task }))
@@ -86,7 +87,7 @@ router.post('/', asyncHandler(async (req, res) => {
  */
 router.put('/:id', asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { title, resource_group_id, recurrence_rule, is_active } = req.body
+  const { title, resource_group_id, recurrence_rule, is_active, starts_at } = req.body
 
   // Validate required fields
   if (!title) {
@@ -105,7 +106,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
 
   const task = await updateRoutineTask(
     parseInt(id),
-    { title, resource_group_id, recurrence_rule, is_active },
+    { title, resource_group_id, recurrence_rule, is_active, starts_at },
     req.user.id
   )
   res.json(successResponse({ routine_task: task }))
@@ -148,6 +149,16 @@ router.post('/instances/:id/skip', asyncHandler(async (req, res) => {
 router.post('/instances/:id/uncomplete', asyncHandler(async (req, res) => {
   const { id } = req.params
   const instance = await uncompleteInstance(parseInt(id), req.user.id)
+  res.json(successResponse({ instance }))
+}))
+
+/**
+ * POST /api/routine-tasks/instances/:id/execute-now
+ * Clear scheduled_at for an instance (execute now)
+ */
+router.post('/instances/:id/execute-now', asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const instance = await clearInstanceScheduledAt(parseInt(id), req.user.id)
   res.json(successResponse({ instance }))
 }))
 

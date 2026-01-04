@@ -1,95 +1,148 @@
-import db from '../database/index.js'
+import { eq, and, asc } from 'drizzle-orm'
+import { getDb, routineTasks, routineTaskInstances } from '../database/drizzle.js'
+import pkg from 'rrule'
+const { RRule } = pkg
+
+// Note: We import updateDailyAnalytics lazily to avoid circular dependency
+let updateDailyAnalytics = null
+async function getDailyAnalyticsUpdater() {
+  if (!updateDailyAnalytics) {
+    const module = await import('./dailyAnalyticsService.js')
+    updateDailyAnalytics = module.updateDailyAnalytics
+  }
+  return updateDailyAnalytics
+}
 
 /**
- * Get the week number of the month (incomplete week counts as week 1)
- * @param {Date} date - The date to check
- * @returns {number} Week number (1-5)
+ * Weekday mapping from our format (0=Sunday) to RRule format
  */
-function getWeekOfMonth(date) {
-  const firstDayOfMonth = new Date(date.getFullYear(), date.getMonth(), 1)
-  const dayOfMonth = date.getDate()
-  const firstDayOfWeek = firstDayOfMonth.getDay() // 0 = Sunday
+const WEEKDAY_MAP = {
+  0: RRule.SU,
+  1: RRule.MO,
+  2: RRule.TU,
+  3: RRule.WE,
+  4: RRule.TH,
+  5: RRule.FR,
+  6: RRule.SA,
+}
 
-  // Calculate which week this day falls into
-  // Week 1 starts from day 1, even if it's incomplete
-  return Math.ceil((dayOfMonth + firstDayOfWeek) / 7)
+/**
+ * Frequency mapping from our format to RRule format
+ */
+const FREQUENCY_MAP = {
+  daily: RRule.DAILY,
+  weekly: RRule.WEEKLY,
+  monthly: RRule.MONTHLY,
+  yearly: RRule.YEARLY,
+}
+
+/**
+ * Get ISO week number of a date
+ * ISO 8601: Week 1 is the week containing the first Thursday of the year
+ * @param {Date} date - The date to check
+ * @returns {number} ISO week number (1-53)
+ */
+function getISOWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  const dayNum = d.getUTCDay() || 7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7)
+  return weekNo
+}
+
+/**
+ * Build RRule from our recurrence rule format
+ */
+function buildRRule(rule, dtstart) {
+  const startDate = new Date(Date.UTC(
+    dtstart.getFullYear(),
+    dtstart.getMonth(),
+    dtstart.getDate()
+  ))
+
+  const frequency = rule.frequency === 'interval' ? 'daily' : rule.frequency
+
+  const options = {
+    freq: FREQUENCY_MAP[frequency] ?? RRule.DAILY,
+    dtstart: startDate,
+  }
+
+  if (rule.frequency === 'interval' && rule.interval) {
+    options.interval = rule.interval
+  } else if (rule.interval && rule.interval > 1) {
+    options.interval = rule.interval
+  }
+
+  const weekdays = rule.byweekday ?? rule.daysOfWeek
+  if (weekdays && weekdays.length > 0) {
+    options.byweekday = weekdays.map(d => {
+      if (typeof d === 'number') {
+        return WEEKDAY_MAP[d]
+      }
+      if (d.day !== undefined && d.n !== undefined) {
+        return WEEKDAY_MAP[d.day].nth(d.n)
+      }
+      return WEEKDAY_MAP[d]
+    })
+  }
+
+  const monthdays = rule.bymonthday ?? rule.daysOfMonth
+  if (monthdays && monthdays.length > 0) {
+    options.bymonthday = monthdays
+  }
+
+  if (rule.bymonth && rule.bymonth.length > 0) {
+    options.bymonth = rule.bymonth
+  }
+
+  if (rule.bysetpos && rule.bysetpos.length > 0) {
+    options.bysetpos = rule.bysetpos
+  }
+
+  return new RRule(options)
 }
 
 /**
  * Check if a routine task should run on a given date based on recurrence rule
- * @param {Object} recurrenceRule - The recurrence rule object
- * @param {Date} date - The date to check
- * @returns {boolean} True if the task should run on this date
  */
 export function shouldRunToday(recurrenceRule, date = new Date()) {
   if (!recurrenceRule) return false
 
-  const { frequency, interval, daysOfWeek, weekFilter, daysOfMonth, timeRange, exceptions } = recurrenceRule
-
-  // Check exceptions first
   const dateString = date.toISOString().split('T')[0]
-  if (exceptions && exceptions.includes(dateString)) {
+  if (recurrenceRule.exceptions && recurrenceRule.exceptions.includes(dateString)) {
     return false
   }
 
-  const dayOfWeek = date.getDay() // 0 = Sunday, 1 = Monday, etc.
+  if (recurrenceRule.weekFilter && recurrenceRule.weekFilter.type !== 'all') {
+    const isoWeek = getISOWeekNumber(date)
+    if (recurrenceRule.weekFilter.type === 'odd' && isoWeek % 2 === 0) {
+      return false
+    }
+    if (recurrenceRule.weekFilter.type === 'even' && isoWeek % 2 !== 0) {
+      return false
+    }
+  }
 
-  switch (frequency) {
-    case 'daily':
-      return true
+  const startOfDay = new Date(Date.UTC(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate()
+  ))
+  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000 - 1)
 
-    case 'weekly':
-      // Check if today is one of the specified days
-      if (daysOfWeek && !daysOfWeek.includes(dayOfWeek)) {
-        return false
-      }
-
-      // Check week filter
-      if (weekFilter) {
-        const weekOfMonth = getWeekOfMonth(date)
-        switch (weekFilter.type) {
-          case 'odd':
-            if (weekOfMonth % 2 === 0) return false
-            break
-          case 'even':
-            if (weekOfMonth % 2 !== 0) return false
-            break
-          case 'specific':
-            if (weekFilter.weeks && !weekFilter.weeks.includes(weekOfMonth)) return false
-            break
-          case 'all':
-          default:
-            // No filtering
-            break
-        }
-      }
-
-      return true
-
-    case 'monthly':
-      // Check if today is one of the specified days of month
-      if (daysOfMonth && !daysOfMonth.includes(date.getDate())) {
-        return false
-      }
-      return true
-
-    case 'interval':
-      // For interval-based, we need a reference start date
-      // For simplicity, we check if (daysSinceEpoch % interval === 0)
-      if (!interval || interval <= 0) return true
-      const daysSinceEpoch = Math.floor(date.getTime() / (1000 * 60 * 60 * 24))
-      return daysSinceEpoch % interval === 0
-
-    default:
-      return true
+  try {
+    const rrule = buildRRule(recurrenceRule, startOfDay)
+    const occurrences = rrule.between(startOfDay, endOfDay, true)
+    return occurrences.length > 0
+  } catch (error) {
+    console.error('Error evaluating recurrence rule:', error)
+    return false
   }
 }
 
 /**
  * Check if current time is within the task's time range
- * @param {Object} recurrenceRule - The recurrence rule object
- * @param {Date} now - The current time
- * @returns {boolean} True if within time range (or no time range specified)
  */
 export function isWithinTimeRange(recurrenceRule, now = new Date()) {
   if (!recurrenceRule || !recurrenceRule.timeRange) return true
@@ -102,7 +155,6 @@ export function isWithinTimeRange(recurrenceRule, now = new Date()) {
   const startMinutes = startHour * 60 + startMin
 
   if (!end) {
-    // No end time means the whole day after start
     return currentMinutes >= startMinutes
   }
 
@@ -113,41 +165,69 @@ export function isWithinTimeRange(recurrenceRule, now = new Date()) {
 }
 
 /**
+ * Convert routine task row to snake_case
+ */
+function taskToSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    user_id: row.userId,
+    title: row.title,
+    resource_group_id: row.resourceGroupId,
+    recurrence_rule: row.recurrenceRule,
+    is_active: row.isActive,
+    starts_at: row.startsAt,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
+}
+
+/**
+ * Convert routine task instance row to snake_case
+ */
+function instanceToSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    routine_task_id: row.routineTaskId,
+    user_id: row.userId,
+    scheduled_date: row.scheduledDate,
+    status: row.status,
+    scheduled_at: row.scheduledAt,
+    completed_at: row.completedAt,
+    created_at: row.createdAt,
+  }
+}
+
+/**
  * Get all routine task definitions for a user
- * @param {number} userId - User ID
- * @returns {Promise<Array>} Array of routine tasks
  */
 export async function getRoutineTasks(userId) {
-  const result = await db.query(
-    'SELECT * FROM routine_tasks WHERE user_id = $1 ORDER BY id',
-    [userId]
-  )
-  return result.rows
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(routineTasks)
+    .where(eq(routineTasks.userId, userId))
+    .orderBy(asc(routineTasks.id))
+
+  return result.map(taskToSnakeCase)
 }
 
 /**
  * Get a single routine task by ID
- * @param {number} id - Routine task ID
- * @param {number} userId - User ID
- * @returns {Promise<Object|null>} Routine task or null
  */
 export async function getRoutineTaskById(id, userId) {
-  const result = await db.query(
-    'SELECT * FROM routine_tasks WHERE id = $1 AND user_id = $2',
-    [id, userId]
-  )
-  return result.rows.length > 0 ? result.rows[0] : null
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(routineTasks)
+    .where(and(eq(routineTasks.id, id), eq(routineTasks.userId, userId)))
+
+  return result.length > 0 ? taskToSnakeCase(result[0]) : null
 }
 
 /**
  * Create a new routine task
- * @param {Object} data - Routine task data
- * @param {string} data.title - Task title
- * @param {number|null} data.resource_group_id - Resource group ID
- * @param {Object} data.recurrence_rule - Recurrence rule object
- * @param {boolean} data.is_active - Whether the task is active
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Created routine task
  */
 export async function createRoutineTask(data, userId) {
   const {
@@ -155,24 +235,29 @@ export async function createRoutineTask(data, userId) {
     resource_group_id = null,
     recurrence_rule,
     is_active = true,
+    starts_at = null,
   } = data
 
-  const result = await db.query(
-    `INSERT INTO routine_tasks (user_id, title, resource_group_id, recurrence_rule, is_active)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING *`,
-    [userId, title, resource_group_id, JSON.stringify(recurrence_rule), is_active]
-  )
+  const db = await getDb()
+  const result = await db
+    .insert(routineTasks)
+    .values({
+      userId,
+      title,
+      resourceGroupId: resource_group_id,
+      recurrenceRule: recurrence_rule,
+      isActive: is_active,
+      startsAt: starts_at ? new Date(starts_at) : null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning()
 
-  return result.rows[0]
+  return taskToSnakeCase(result[0])
 }
 
 /**
  * Update an existing routine task
- * @param {number} id - Routine task ID
- * @param {Object} data - Updated data
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated routine task
  */
 export async function updateRoutineTask(id, data, userId) {
   const {
@@ -180,92 +265,132 @@ export async function updateRoutineTask(id, data, userId) {
     resource_group_id,
     recurrence_rule,
     is_active,
+    starts_at,
   } = data
 
-  const result = await db.query(
-    `UPDATE routine_tasks
-     SET title = $1, resource_group_id = $2, recurrence_rule = $3, is_active = $4
-     WHERE id = $5 AND user_id = $6
-     RETURNING *`,
-    [title, resource_group_id, JSON.stringify(recurrence_rule), is_active, id, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(routineTasks)
+    .set({
+      title,
+      resourceGroupId: resource_group_id,
+      recurrenceRule: recurrence_rule,
+      isActive: is_active,
+      startsAt: starts_at ? new Date(starts_at) : null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(routineTasks.id, id), eq(routineTasks.userId, userId)))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Routine task not found: ${id}`)
   }
 
-  return result.rows[0]
+  return taskToSnakeCase(result[0])
 }
 
 /**
  * Delete a routine task
- * @param {number} id - Routine task ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Deleted routine task
  */
 export async function deleteRoutineTask(id, userId) {
-  const result = await db.query(
-    'DELETE FROM routine_tasks WHERE id = $1 AND user_id = $2 RETURNING *',
-    [id, userId]
-  )
+  const db = await getDb()
 
-  if (result.rows.length === 0) {
+  // Delete all instances first
+  await db
+    .delete(routineTaskInstances)
+    .where(eq(routineTaskInstances.routineTaskId, id))
+
+  // Then delete the task
+  const result = await db
+    .delete(routineTasks)
+    .where(and(eq(routineTasks.id, id), eq(routineTasks.userId, userId)))
+    .returning()
+
+  if (result.length === 0) {
     throw new Error(`Routine task not found: ${id}`)
   }
 
-  return result.rows[0]
+  return taskToSnakeCase(result[0])
 }
 
 /**
  * Get or create today's instances for all active routine tasks
- * @param {number} userId - User ID
- * @returns {Promise<Array>} Array of instances with routine task info
  */
 export async function getTodayInstances(userId) {
   const today = new Date().toISOString().split('T')[0]
+  const todayDate = new Date(today)
+
+  const db = await getDb()
 
   // Get all active routine tasks
-  const routineTasks = await db.query(
-    'SELECT * FROM routine_tasks WHERE user_id = $1 AND is_active = true',
-    [userId]
-  )
+  const tasksResult = await db
+    .select()
+    .from(routineTasks)
+    .where(and(eq(routineTasks.userId, userId), eq(routineTasks.isActive, true)))
 
   const instances = []
 
-  for (const task of routineTasks.rows) {
+  for (const task of tasksResult) {
+    // Check if today is before starts_at date (if set)
+    if (task.startsAt) {
+      const startsAtDate = new Date(task.startsAt)
+      const startsAtDateOnly = new Date(startsAtDate.toISOString().split('T')[0])
+      if (todayDate < startsAtDateOnly) {
+        continue
+      }
+    }
+
     // Check if this task should run today
-    if (!shouldRunToday(task.recurrence_rule, new Date())) {
+    if (!shouldRunToday(task.recurrenceRule, new Date())) {
       continue
     }
 
     // Check if instance already exists for today
-    const existingInstance = await db.query(
-      'SELECT * FROM routine_task_instances WHERE routine_task_id = $1 AND scheduled_date = $2',
-      [task.id, today]
-    )
+    const existingInstances = await db
+      .select()
+      .from(routineTaskInstances)
+      .where(and(
+        eq(routineTaskInstances.routineTaskId, task.id),
+        eq(routineTaskInstances.scheduledDate, today)
+      ))
 
     let instance
-    if (existingInstance.rows.length > 0) {
-      instance = existingInstance.rows[0]
+    if (existingInstances.length > 0) {
+      instance = existingInstances[0]
     } else {
+      // Compute scheduled_at from today + time portion of starts_at
+      let scheduledAt = null
+      if (task.startsAt) {
+        const startsAtDate = new Date(task.startsAt)
+        const hours = startsAtDate.getHours().toString().padStart(2, '0')
+        const minutes = startsAtDate.getMinutes().toString().padStart(2, '0')
+        scheduledAt = new Date(`${today}T${hours}:${minutes}:00`)
+      }
+
       // Create new instance
-      const newInstance = await db.query(
-        `INSERT INTO routine_task_instances (routine_task_id, user_id, scheduled_date, status)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *`,
-        [task.id, userId, today, 'pending']
-      )
-      instance = newInstance.rows[0]
+      const newInstances = await db
+        .insert(routineTaskInstances)
+        .values({
+          routineTaskId: task.id,
+          userId,
+          scheduledDate: today,
+          status: 'pending',
+          scheduledAt,
+          createdAt: new Date(),
+        })
+        .returning()
+      instance = newInstances[0]
     }
 
     // Combine instance with task info
     instances.push({
-      ...instance,
+      ...instanceToSnakeCase(instance),
       routine_task: {
         id: task.id,
         title: task.title,
-        resource_group_id: task.resource_group_id,
-        recurrence_rule: task.recurrence_rule,
+        resource_group_id: task.resourceGroupId,
+        recurrence_rule: task.recurrenceRule,
+        starts_at: task.startsAt,
       },
     })
   }
@@ -275,68 +400,107 @@ export async function getTodayInstances(userId) {
 
 /**
  * Complete a routine task instance
- * @param {number} instanceId - Instance ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function completeInstance(instanceId, userId) {
-  const result = await db.query(
-    `UPDATE routine_task_instances
-     SET status = $1, completed_at = $2
-     WHERE id = $3 AND user_id = $4
-     RETURNING *`,
-    ['completed', new Date(), instanceId, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(routineTaskInstances)
+    .set({
+      status: 'completed',
+      completedAt: new Date(),
+    })
+    .where(and(
+      eq(routineTaskInstances.id, instanceId),
+      eq(routineTaskInstances.userId, userId)
+    ))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Instance not found: ${instanceId}`)
   }
 
-  return result.rows[0]
+  // Trigger daily analytics update for the instance date (non-blocking)
+  getDailyAnalyticsUpdater().then(update => {
+    update(userId, result[0].scheduledDate).catch(console.error)
+  })
+
+  return instanceToSnakeCase(result[0])
 }
 
 /**
  * Skip a routine task instance
- * @param {number} instanceId - Instance ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function skipInstance(instanceId, userId) {
-  const result = await db.query(
-    `UPDATE routine_task_instances
-     SET status = $1, completed_at = $2
-     WHERE id = $3 AND user_id = $4
-     RETURNING *`,
-    ['skipped', null, instanceId, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(routineTaskInstances)
+    .set({
+      status: 'skipped',
+      completedAt: null,
+    })
+    .where(and(
+      eq(routineTaskInstances.id, instanceId),
+      eq(routineTaskInstances.userId, userId)
+    ))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Instance not found: ${instanceId}`)
   }
 
-  return result.rows[0]
+  // Trigger daily analytics update for the instance date (non-blocking)
+  getDailyAnalyticsUpdater().then(update => {
+    update(userId, result[0].scheduledDate).catch(console.error)
+  })
+
+  return instanceToSnakeCase(result[0])
 }
 
 /**
  * Uncomplete a routine task instance (set back to pending)
- * @param {number} instanceId - Instance ID
- * @param {number} userId - User ID
- * @returns {Promise<Object>} Updated instance
  */
 export async function uncompleteInstance(instanceId, userId) {
-  const result = await db.query(
-    `UPDATE routine_task_instances
-     SET status = $1, completed_at = $2
-     WHERE id = $3 AND user_id = $4
-     RETURNING *`,
-    ['pending', null, instanceId, userId]
-  )
+  const db = await getDb()
+  const result = await db
+    .update(routineTaskInstances)
+    .set({
+      status: 'pending',
+      completedAt: null,
+    })
+    .where(and(
+      eq(routineTaskInstances.id, instanceId),
+      eq(routineTaskInstances.userId, userId)
+    ))
+    .returning()
 
-  if (result.rows.length === 0) {
+  if (result.length === 0) {
     throw new Error(`Instance not found: ${instanceId}`)
   }
 
-  return result.rows[0]
+  return instanceToSnakeCase(result[0])
+}
+
+/**
+ * Clear scheduled_at for an instance (execute now)
+ */
+export async function clearInstanceScheduledAt(instanceId, userId) {
+  const db = await getDb()
+  const result = await db
+    .update(routineTaskInstances)
+    .set({
+      scheduledAt: null,
+    })
+    .where(and(
+      eq(routineTaskInstances.id, instanceId),
+      eq(routineTaskInstances.userId, userId)
+    ))
+    .returning()
+
+  if (result.length === 0) {
+    throw new Error(`Instance not found: ${instanceId}`)
+  }
+
+  return instanceToSnakeCase(result[0])
 }
 
 export default {
@@ -351,4 +515,5 @@ export default {
   completeInstance,
   skipInstance,
   uncompleteInstance,
+  clearInstanceScheduledAt,
 }

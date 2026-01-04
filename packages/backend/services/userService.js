@@ -1,4 +1,22 @@
-import { query } from '../database/index.js'
+import { eq } from 'drizzle-orm'
+import { getDb, users } from '../database/drizzle.js'
+
+/**
+ * Convert user row from camelCase to snake_case for API compatibility
+ */
+function toSnakeCase(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    zitadel_sub: row.zitadelSub,
+    email: row.email,
+    name: row.name,
+    email_verified: row.emailVerified,
+    settings_data: row.settingsData,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
+}
 
 /**
  * Find or create user by Zitadel sub (user ID)
@@ -11,38 +29,47 @@ import { query } from '../database/index.js'
  */
 export async function findOrCreateUser(userInfo) {
   const { sub, email, name, email_verified } = userInfo
+  const db = await getDb()
 
   // Check if user exists
-  const existingUser = await query(
-    'SELECT * FROM users WHERE zitadel_sub = $1',
-    [sub]
-  )
+  const existingUsers = await db
+    .select()
+    .from(users)
+    .where(eq(users.zitadelSub, sub))
 
-  if (existingUser.rows.length > 0) {
+  if (existingUsers.length > 0) {
+    const user = existingUsers[0]
     // Update user info if changed
-    const user = existingUser.rows[0]
     if (user.email !== email || user.name !== name) {
-      const updated = await query(
-        `UPDATE users
-         SET email = $1, name = $2, email_verified = $3, updated_at = CURRENT_TIMESTAMP
-         WHERE zitadel_sub = $4
-         RETURNING *`,
-        [email, name, email_verified, sub]
-      )
-      return updated.rows[0]
+      const updated = await db
+        .update(users)
+        .set({
+          email,
+          name,
+          emailVerified: email_verified,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.zitadelSub, sub))
+        .returning()
+      return toSnakeCase(updated[0])
     }
-    return user
+    return toSnakeCase(user)
   }
 
   // Create new user
-  const newUser = await query(
-    `INSERT INTO users (zitadel_sub, email, name, email_verified)
-     VALUES ($1, $2, $3, $4)
-     RETURNING *`,
-    [sub, email, name, email_verified]
-  )
+  const newUser = await db
+    .insert(users)
+    .values({
+      zitadelSub: sub,
+      email,
+      name,
+      emailVerified: email_verified,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning()
 
-  return newUser.rows[0]
+  return toSnakeCase(newUser[0])
 }
 
 /**
@@ -51,11 +78,13 @@ export async function findOrCreateUser(userInfo) {
  * @returns {Promise<Object|null>} User record or null
  */
 export async function getUserBySub(sub) {
-  const result = await query(
-    'SELECT * FROM users WHERE zitadel_sub = $1',
-    [sub]
-  )
-  return result.rows[0] || null
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.zitadelSub, sub))
+
+  return toSnakeCase(result[0])
 }
 
 /**
@@ -64,11 +93,13 @@ export async function getUserBySub(sub) {
  * @returns {Promise<Object|null>} User record or null
  */
 export async function getUserById(userId) {
-  const result = await query(
-    'SELECT * FROM users WHERE id = $1',
-    [userId]
-  )
-  return result.rows[0] || null
+  const db = await getDb()
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, userId))
+
+  return toSnakeCase(result[0])
 }
 
 export default {
