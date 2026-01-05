@@ -1,0 +1,70 @@
+# ============================================
+# Docker Compose Configuration
+# ============================================
+# Usage:
+#   docker compose up -d          # Start all services
+#   docker compose logs -f        # View logs
+#   docker compose down           # Stop all services
+# ============================================
+
+services:
+  # ============================================
+  # Frontend (Nginx + Vue.js SPA)
+  # ============================================
+  frontend:
+    image: pomodoro-frontend:latest
+    container_name: pomodoro-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - pomodoro-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ============================================
+  # Backend (Node.js + Express)
+  # ============================================
+  backend:
+    image: pomodoro-backend:latest
+    container_name: pomodoro-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    environment:
+      # Server
+      - NODE_ENV=production
+      - PORT=3001
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - TZ=${TZ:-Asia/Taipei}
+      # Database
+      - DB_MODE=postgres
+      - DATABASE_URL=${DATABASE_URL}
+      # Authentication
+      - MOCK_AUTH=false
+      - ZITADEL_DOMAIN=${ZITADEL_DOMAIN}
+      - ZITADEL_AUDIENCE=${ZITADEL_AUDIENCE}
+      # Optional
+      - ANALYTICS_CRON_SCHEDULE=${ANALYTICS_CRON_SCHEDULE:-0 2 * * *}
+    networks:
+      - pomodoro-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  pomodoro-network:
+    driver: bridge

@@ -20,6 +20,7 @@
           placeholder="請選擇資源分群（可選）"
           clearable
           style="width: 100%"
+          popper-class="d-flex"
         >
           <el-option
             v-for="group in resourceGroups"
@@ -27,59 +28,64 @@
             :label="group.name"
             :value="group.id"
           />
+
+          <!-- 新增資源分群按鈕 -->
+          <template #footer v-if="showAddGroupButton">
+            <el-button
+              text
+              type="primary"
+              class="add-group-button"
+              @click.stop="navigateToResourceSettings"
+            >
+              + 新增自定義分群
+            </el-button>
+          </template>
         </el-select>
       </el-form-item>
 
-      <!-- 例行任務選項 -->
+      <!-- 任務類型選項 -->
       <el-form-item>
-        <el-checkbox v-model="formData.isRoutine">
-          設為例行任務
-        </el-checkbox>
+        <div class="task-type-options">
+          <el-checkbox v-model="formData.isScheduled">
+            預定任務
+          </el-checkbox>
+          <el-checkbox v-model="formData.isRoutine">
+            例行任務
+          </el-checkbox>
+        </div>
+      </el-form-item>
+
+      <!-- 預定時間（一般預定任務：datetime；例行預定任務：time） -->
+      <el-form-item v-if="formData.isScheduled && !formData.isRoutine" label="預定開始時間" required>
+        <el-date-picker
+          v-model="formData.scheduledAt"
+          type="datetime"
+          placeholder="選擇日期時間"
+          style="width: 100%"
+          :disabled-date="disabledDate"
+          format="YYYY/MM/DD HH:mm"
+          value-format="YYYY-MM-DDTHH:mm:ss"
+        />
+      </el-form-item>
+
+      <el-form-item v-if="formData.isScheduled && formData.isRoutine" label="開始日期時間" required>
+        <el-date-picker
+          v-model="formData.startsAt"
+          type="datetime"
+          placeholder="選擇開始日期時間"
+          style="width: 100%"
+          :disabled-date="disabledDate"
+          format="YYYY/MM/DD HH:mm"
+          value-format="YYYY-MM-DDTHH:mm:ss"
+        />
       </el-form-item>
 
       <!-- 週期設定（勾選例行任務時顯示） -->
-      <div v-if="formData.isRoutine" class="recurrence-section">
-        <el-form-item label="週期類型">
-          <el-radio-group v-model="formData.frequency">
-            <el-radio label="daily">每天</el-radio>
-            <el-radio label="weekly">每週</el-radio>
-            <el-radio label="interval">每 N 天</el-radio>
-            <el-radio label="advanced">進階</el-radio>
-          </el-radio-group>
-        </el-form-item>
-
-        <!-- 每週：星期選擇 -->
-        <el-form-item v-if="formData.frequency === 'weekly' || formData.frequency === 'advanced'" label="星期">
-          <el-checkbox-group v-model="formData.daysOfWeek">
-            <el-checkbox :label="1">一</el-checkbox>
-            <el-checkbox :label="2">二</el-checkbox>
-            <el-checkbox :label="3">三</el-checkbox>
-            <el-checkbox :label="4">四</el-checkbox>
-            <el-checkbox :label="5">五</el-checkbox>
-            <el-checkbox :label="6">六</el-checkbox>
-            <el-checkbox :label="0">日</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-
-        <!-- 每 N 天：間隔輸入 -->
-        <el-form-item v-if="formData.frequency === 'interval'" label="間隔天數">
-          <el-input-number
-            v-model="formData.interval"
-            :min="1"
-            :max="365"
-            style="width: 100%"
-          />
-        </el-form-item>
-
-        <!-- 進階：週數篩選 -->
-        <el-form-item v-if="formData.frequency === 'advanced'" label="週數篩選">
-          <el-radio-group v-model="formData.weekFilterType">
-            <el-radio label="all">全部</el-radio>
-            <el-radio label="odd">奇數週</el-radio>
-            <el-radio label="even">偶數週</el-radio>
-          </el-radio-group>
-        </el-form-item>
-      </div>
+      <RecurrenceRuleEditor
+        v-if="formData.isRoutine"
+        v-model="recurrenceRule"
+        class="recurrence-editor-spacing"
+      />
 
       <el-form-item>
         <el-button
@@ -88,7 +94,7 @@
           :loading="submitting"
           style="width: 100%"
         >
-          {{ formData.isRoutine ? '新增例行任務' : '新增任務' }}
+          {{ buttonText }}
         </el-button>
       </el-form-item>
     </el-form>
@@ -96,32 +102,103 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { getResourceGroups } from '../api/resourceGroups'
 import { createSimpleTask } from '../api/simpleTasks'
 import { useRoutineTasksStore } from '../stores/routineTasks'
+import RecurrenceRuleEditor from './RecurrenceRuleEditor.vue'
+
+const router = useRouter()
 
 const emit = defineEmits(['task-created', 'routine-task-created'])
 
 const routineTasksStore = useRoutineTasksStore()
 
-// 表單資料
-const formData = ref({
-  title: '',
-  resource_group_id: null,
-  isRoutine: false,
-  frequency: 'daily',
-  daysOfWeek: [],
-  interval: 1,
-  weekFilterType: 'all',
-})
+// localStorage keys
+const STORAGE_KEY_FORM = 'newTaskForm:formData'
+const STORAGE_KEY_RECURRENCE = 'newTaskForm:recurrenceRule'
+
+// Load saved data from localStorage (synchronous to avoid flash)
+const loadSavedFormData = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_FORM)
+    if (saved) {
+      return JSON.parse(saved)
+    }
+  } catch (e) {
+    console.error('Failed to load saved form data:', e)
+  }
+  return { title: '', resource_group_id: null, isRoutine: false, isScheduled: false, scheduledAt: null, startsAt: null }
+}
+
+const loadSavedRecurrenceRule = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_RECURRENCE)
+    if (saved) {
+      return JSON.parse(saved)
+    }
+  } catch (e) {
+    console.error('Failed to load saved recurrence rule:', e)
+  }
+  return { frequency: 'daily' }
+}
+
+// Recurrence rule (for routine tasks) - initialized from localStorage
+const recurrenceRule = ref(loadSavedRecurrenceRule())
+
+// 表單資料 - initialized from localStorage
+const formData = ref(loadSavedFormData())
 
 // 資源分群列表
 const resourceGroups = ref([])
 
 // 提交狀態
 const submitting = ref(false)
+
+// 計算資源分群總百分比
+const totalPercentage = computed(() => {
+  return resourceGroups.value.reduce((sum, group) => sum + group.percentage_limit, 0)
+})
+
+// 判斷是否顯示新增分群按鈕
+const showAddGroupButton = computed(() => {
+  return totalPercentage.value !== 100
+})
+
+// 按鈕文字
+const buttonText = computed(() => {
+  if (formData.value.isRoutine && formData.value.isScheduled) return '新增預定例行任務'
+  if (formData.value.isRoutine) return '新增例行任務'
+  if (formData.value.isScheduled) return '新增預定任務'
+  return '新增任務'
+})
+
+// 禁用過去的日期
+const disabledDate = (date) => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return date < today
+}
+
+
+// Watch and save form data to localStorage
+watch(formData, (newValue) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_FORM, JSON.stringify(newValue))
+  } catch (e) {
+    console.error('Failed to save form data:', e)
+  }
+}, { deep: true })
+
+watch(recurrenceRule, (newValue) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_RECURRENCE, JSON.stringify(newValue))
+  } catch (e) {
+    console.error('Failed to save recurrence rule:', e)
+  }
+}, { deep: true })
 
 // 載入資源分群
 const loadResourceGroups = async () => {
@@ -134,42 +211,25 @@ const loadResourceGroups = async () => {
   }
 }
 
-// 建立週期規則
-const buildRecurrenceRule = () => {
-  const rule = {
-    frequency: formData.value.frequency === 'advanced' ? 'weekly' : formData.value.frequency,
-  }
-
-  if (formData.value.frequency === 'weekly' || formData.value.frequency === 'advanced') {
-    if (formData.value.daysOfWeek.length > 0) {
-      rule.daysOfWeek = [...formData.value.daysOfWeek].sort((a, b) => a - b)
-    }
-  }
-
-  if (formData.value.frequency === 'interval') {
-    rule.interval = formData.value.interval
-  }
-
-  if (formData.value.frequency === 'advanced' && formData.value.weekFilterType !== 'all') {
-    rule.weekFilter = {
-      type: formData.value.weekFilterType,
-    }
-  }
-
-  return rule
+// 跳轉到資源管理頁面
+const navigateToResourceSettings = () => {
+  router.push('/settings/resources')
 }
 
-// 重置表單
+// 重置表單 (also clears localStorage)
 const resetForm = () => {
   formData.value = {
     title: '',
     resource_group_id: null,
     isRoutine: false,
-    frequency: 'daily',
-    daysOfWeek: [],
-    interval: 1,
-    weekFilterType: 'all',
+    isScheduled: false,
+    scheduledAt: null,
+    startsAt: null,
   }
+  recurrenceRule.value = { frequency: 'daily' }
+  // Clear localStorage
+  localStorage.removeItem(STORAGE_KEY_FORM)
+  localStorage.removeItem(STORAGE_KEY_RECURRENCE)
 }
 
 // 提交表單
@@ -180,11 +240,45 @@ const handleSubmit = async () => {
     return
   }
 
+  // 驗證預定任務
+  if (formData.value.isScheduled && !formData.value.isRoutine) {
+    if (!formData.value.scheduledAt) {
+      ElMessage.warning('請選擇預定開始時間')
+      return
+    }
+    // 檢查時間是否為未來
+    if (new Date(formData.value.scheduledAt) <= new Date()) {
+      ElMessage.warning('預定時間必須是未來的時間')
+      return
+    }
+  }
+
+  // 驗證預定例行任務
+  if (formData.value.isScheduled && formData.value.isRoutine) {
+    if (!formData.value.startsAt) {
+      ElMessage.warning('請選擇開始日期時間')
+      return
+    }
+  }
+
   // 驗證例行任務的週期設定
   if (formData.value.isRoutine) {
-    if ((formData.value.frequency === 'weekly' || formData.value.frequency === 'advanced') &&
-        formData.value.daysOfWeek.length === 0) {
+    const rule = recurrenceRule.value
+    // Check if weekly frequency requires at least one day selected
+    if (rule.frequency === 'weekly' && (!rule.byweekday || rule.byweekday.length === 0)) {
       ElMessage.warning('請選擇至少一個星期')
+      return
+    }
+    // Check if monthly/yearly requires at least one date or weekday
+    if ((rule.frequency === 'monthly' || rule.frequency === 'yearly') &&
+        (!rule.bymonthday || rule.bymonthday.length === 0) &&
+        (!rule.byweekday || rule.byweekday.length === 0)) {
+      ElMessage.warning('請選擇日期或星期')
+      return
+    }
+    // Check if yearly requires at least one month
+    if (rule.frequency === 'yearly' && (!rule.bymonth || rule.bymonth.length === 0)) {
+      ElMessage.warning('請選擇至少一個月份')
       return
     }
   }
@@ -197,15 +291,20 @@ const handleSubmit = async () => {
       const routineTaskData = {
         title: formData.value.title.trim(),
         resource_group_id: formData.value.resource_group_id || null,
-        recurrence_rule: buildRecurrenceRule(),
+        recurrence_rule: recurrenceRule.value,
         is_active: true,
       }
 
+      // 如果也勾選了預定任務，加入 starts_at
+      if (formData.value.isScheduled && formData.value.startsAt) {
+        routineTaskData.starts_at = formData.value.startsAt
+      }
+
       await routineTasksStore.createRoutineTask(routineTaskData)
-      ElMessage.success('新增例行任務成功')
+      ElMessage.success(formData.value.isScheduled ? '新增預定例行任務成功' : '新增例行任務成功')
       emit('routine-task-created')
     } else {
-      // 新增一般任務
+      // 新增一般任務（含預定任務）
       const taskData = {
         title: formData.value.title.trim(),
         status: '待處理',
@@ -215,10 +314,14 @@ const handleSubmit = async () => {
         taskData.resource_group_id = formData.value.resource_group_id
       }
 
+      if (formData.value.isScheduled && formData.value.scheduledAt) {
+        taskData.scheduled_at = formData.value.scheduledAt
+      }
+
       const response = await createSimpleTask(taskData)
       const newTask = response.data.task
 
-      ElMessage.success('新增任務成功')
+      ElMessage.success(formData.value.isScheduled ? '新增預定任務成功' : '新增任務成功')
       emit('task-created', newTask)
     }
 
@@ -258,32 +361,27 @@ onMounted(() => {
   }
 
   --el-text-color-regular: #606266;
+
+  .task-type-options {
+    display: flex;
+    gap: 16px;
+  }
+
+  .recurrence-editor-spacing {
+    margin-bottom: 18px;
+  }
+
+  :deep(.el-form-item:last-child) {
+    margin-bottom: 0;
+  }
 }
+</style>
 
-.recurrence-section {
-  background: #f5f7fa;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 16px;
-
-  :deep(.el-form-item) {
-    margin-bottom: 12px;
-
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
-
-  :deep(.el-radio-group) {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  :deep(.el-checkbox-group) {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+<style>
+.d-flex {
+  .add-group-button {
+    flex: 1;
+    justify-content: center;
   }
 }
 </style>

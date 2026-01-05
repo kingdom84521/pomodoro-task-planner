@@ -10,6 +10,8 @@ import {
   startMeeting,
   endMeeting,
   skipMeeting,
+  startMeetingNow,
+  convertToRecurring,
 } from '../api/meetings.js'
 import { useUserSettingsStore } from './userSettings.js'
 
@@ -374,6 +376,65 @@ export const useMeetingsStore = defineStore('meetings', {
     resetStopwatch() {
       this.stopStopwatch()
       this.stopwatch.elapsed = 0
+    },
+
+    /**
+     * Start a meeting now (ad-hoc start)
+     * For recurring meetings, creates a new instance
+     * For one-time meetings, starts the existing instance
+     * @param {number} meetingId - Meeting ID
+     */
+    async startMeetingNow(meetingId) {
+      try {
+        const response = await startMeetingNow(meetingId)
+        const instance = response.data.instance
+
+        // Add to today's meetings if not already there
+        const existingIndex = this.todayMeetings.findIndex((inst) => inst.id === instance.id)
+        if (existingIndex !== -1) {
+          this.todayMeetings[existingIndex] = instance
+        } else {
+          this.todayMeetings.push(instance)
+        }
+
+        // Remove from upcoming/overdue
+        this.upcomingMeetings = this.upcomingMeetings.filter((m) => m.id !== instance.id)
+        this.overdueMeetings = this.overdueMeetings.filter((m) => m.id !== instance.id)
+
+        // Set as active meeting and start stopwatch
+        this.activeMeeting = instance
+        this.startStopwatch()
+
+        return instance
+      } catch (error) {
+        console.error('Failed to start meeting now:', error)
+        throw error
+      }
+    },
+
+    /**
+     * Convert a one-time meeting to recurring
+     * @param {number} meetingId - Meeting ID
+     */
+    async convertToRecurring(meetingId) {
+      try {
+        const response = await convertToRecurring(meetingId)
+        const updatedMeeting = response.data.meeting
+
+        // Update in meetings list
+        const index = this.meetings.findIndex((m) => m.id === meetingId)
+        if (index !== -1) {
+          this.meetings[index] = updatedMeeting
+        }
+
+        // Refresh today's meetings to reflect changes
+        this.fetchTodayMeetings()
+
+        return updatedMeeting
+      } catch (error) {
+        console.error('Failed to convert to recurring:', error)
+        throw error
+      }
     },
   },
 })

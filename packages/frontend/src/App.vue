@@ -8,7 +8,7 @@
           <router-link to="/tasks" class="nav-link">任務列表</router-link>
           <router-link to="/meetings" class="nav-link">會議</router-link>
           <router-link to="/history" class="nav-link">工作紀錄</router-link>
-          <router-link to="/statistics" class="nav-link">數值統計</router-link>
+          <router-link to="/statistics" class="nav-link">數據分析</router-link>
         </div>
         <div class="navbar-right">
           <!-- User Info Display -->
@@ -103,6 +103,13 @@ onMounted(async () => {
       overflow-y: auto;
       display: flex;
       flex-direction: column;
+      align-items: stretch;
+
+      /* Ensure router-view content fills width */
+      > * {
+        width: 100%;
+        flex-shrink: 0;
+      }
     }
   }
 
@@ -143,5 +150,10 @@ onMounted(async () => {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Add offset to picker dropdown */
+.picker-with-offset {
+  margin-top: 8px;
 }
 </style>

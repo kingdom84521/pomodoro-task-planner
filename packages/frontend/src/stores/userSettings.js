@@ -35,6 +35,20 @@ export const useUserSettingsStore = defineStore('userSettings', {
     },
     // Meeting settings
     meetingReminderMinutes: 5,    // Minutes before meeting to show reminder
+    meetingWarningThreshold: {    // Meeting time warning thresholds
+      yellow: 30,                 // Yellow warning when meeting ratio >= 30%
+      red: 50,                    // Red warning when meeting ratio >= 50%
+    },
+    // Time settings
+    timeSettings: {
+      quarterMonths: 3,                       // 一季幾個月
+      quarterStartDate: { month: 1, day: 1 }, // 季度起始日 (月/日)
+      workHours: {
+        start: '09:00',                       // 工作開始時間 (HH:mm)
+        end: '18:00',                         // 工作結束時間 (HH:mm)
+      },
+      workDays: [1, 2, 3, 4, 5],              // 工作日 (0=週日, 1=週一, ..., 6=週六)
+    },
   }),
 
   getters: {
@@ -109,6 +123,24 @@ export const useUserSettingsStore = defineStore('userSettings', {
     },
 
     /**
+     * Update meeting warning thresholds
+     * @param {Object} thresholds - { yellow: number, red: number }
+     */
+    updateMeetingWarningThreshold(thresholds) {
+      this.meetingWarningThreshold = { ...this.meetingWarningThreshold, ...thresholds }
+      this.isSynced = false
+    },
+
+    /**
+     * Update time settings
+     * @param {Object} settings - Time settings object
+     */
+    updateTimeSettings(settings) {
+      this.timeSettings = { ...this.timeSettings, ...settings }
+      this.isSynced = false
+    },
+
+    /**
      * Upload settings to cloud
      */
     async uploadSettings() {
@@ -119,6 +151,8 @@ export const useUserSettingsStore = defineStore('userSettings', {
           pendingEffectiveDate: this.pomodoro.pendingEffectiveDate,
         },
         meetingReminderMinutes: this.meetingReminderMinutes,
+        meetingWarningThreshold: this.meetingWarningThreshold,
+        timeSettings: this.timeSettings,
       }
 
       const base64 = btoa(JSON.stringify(data))
@@ -154,6 +188,14 @@ export const useUserSettingsStore = defineStore('userSettings', {
 
         if (data.meetingReminderMinutes !== undefined) {
           this.meetingReminderMinutes = data.meetingReminderMinutes
+        }
+
+        if (data.meetingWarningThreshold) {
+          this.meetingWarningThreshold = { ...this.meetingWarningThreshold, ...data.meetingWarningThreshold }
+        }
+
+        if (data.timeSettings) {
+          this.timeSettings = { ...this.timeSettings, ...data.timeSettings }
         }
 
         this.isSynced = true

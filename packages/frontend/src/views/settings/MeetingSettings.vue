@@ -14,29 +14,15 @@
         />
         <p class="form-hint">會議開始前幾分鐘顯示提醒</p>
       </el-form-item>
-
-      <el-form-item>
-        <el-button
-          type="primary"
-          :loading="syncing"
-          @click="handleSync"
-        >
-          {{ syncing ? '同步中...' : '同步到雲端' }}
-        </el-button>
-        <span v-if="!isSynced" class="sync-hint">有未同步的變更</span>
-      </el-form-item>
     </el-form>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed } from 'vue'
 import { useUserSettingsStore } from '../../stores/userSettings'
 
 const settingsStore = useUserSettingsStore()
-
-const syncing = ref(false)
 
 // Reminder minutes
 const reminderMinutes = computed({
@@ -44,31 +30,10 @@ const reminderMinutes = computed({
   set: (value) => settingsStore.updateMeetingReminderMinutes(value),
 })
 
-// Sync status
-const isSynced = computed(() => settingsStore.isSynced)
-
 // Handle reminder change
 const handleReminderChange = (value) => {
   settingsStore.updateMeetingReminderMinutes(value)
 }
-
-// Handle sync
-const handleSync = async () => {
-  syncing.value = true
-  try {
-    await settingsStore.uploadSettings()
-    ElMessage.success('已同步到雲端')
-  } catch (error) {
-    console.error('Failed to sync settings:', error)
-    ElMessage.error('同步失敗')
-  } finally {
-    syncing.value = false
-  }
-}
-
-onMounted(async () => {
-  await settingsStore.downloadSettings()
-})
 </script>
 
 <style scoped>
@@ -92,13 +57,7 @@ onMounted(async () => {
   .form-hint {
     font-size: 12px;
     color: #909399;
-    margin-top: 4px;
-  }
-
-  .sync-hint {
-    margin-left: 12px;
-    font-size: 13px;
-    color: #e6a23c;
+    margin: 4px 0 0 8px;
   }
 }
 </style>

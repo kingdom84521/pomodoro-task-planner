@@ -8,6 +8,7 @@ import {
   completeInstance,
   skipInstance,
   uncompleteInstance,
+  executeInstanceNow,
 } from '../api/routineTasks.js'
 
 export const useRoutineTasksStore = defineStore('routineTasks', {
@@ -215,6 +216,27 @@ export const useRoutineTasksStore = defineStore('routineTasks', {
         return response.data.instance
       } catch (error) {
         console.error('Failed to uncomplete instance:', error)
+        throw error
+      }
+    },
+
+    /**
+     * Execute an instance now (clear scheduled_at)
+     * @param {number} instanceId - Instance ID
+     */
+    async executeInstanceNow(instanceId) {
+      try {
+        const response = await executeInstanceNow(instanceId)
+        const index = this.todayInstances.findIndex((inst) => inst.id === instanceId)
+        if (index !== -1) {
+          this.todayInstances[index] = {
+            ...this.todayInstances[index],
+            ...response.data.instance,
+          }
+        }
+        return response.data.instance
+      } catch (error) {
+        console.error('Failed to execute instance now:', error)
         throw error
       }
     },

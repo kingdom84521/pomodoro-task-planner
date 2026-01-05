@@ -1,14 +1,13 @@
 <template>
   <div class="work-history-page">
     <div class="left-panel">
-      <div class="table-container">
-        <BounceLoading v-if="!isReady" />
-        <DataTable v-else :data="records">
-          <el-table-column prop="taskName" label="任務名稱" min-width="40" />
-          <el-table-column prop="duration" label="耗時" min-width="30" align="center" />
-          <el-table-column prop="date" label="日期" min-width="30" align="center" />
-        </DataTable>
-      </div>
+      <BounceLoading v-if="!isReady" />
+      <CardTable
+        v-else
+        :columns="columns"
+        :data="records"
+        empty-text="尚無工作紀錄"
+      />
     </div>
     <div class="right-panel">
       <!-- Meeting reminder bar -->
@@ -27,7 +26,7 @@ import { ElMessage } from 'element-plus'
 import PomodoroClock from '../components/PomodoroClock.vue'
 import MeetingClock from '../components/MeetingClock.vue'
 import MeetingReminderBar from '../components/MeetingReminderBar.vue'
-import DataTable from '../components/DataTable.vue'
+import CardTable from '../components/CardTable.vue'
 import BounceLoading from '../components/BounceLoading.vue'
 import { getWorkRecords } from '../api/workRecords'
 import { useMeetingsStore } from '../stores/meetings'
@@ -36,6 +35,13 @@ const meetingsStore = useMeetingsStore()
 
 // Check if there's an active meeting
 const hasActiveMeeting = computed(() => !!meetingsStore.activeMeeting)
+
+// Column definitions
+const columns = [
+  { prop: 'taskName', label: '任務名稱', flex: 1 },
+  { prop: 'duration', label: '耗時', width: '120px', align: 'center' },
+  { prop: 'date', label: '日期', width: '120px', align: 'center' },
+]
 
 // 資料
 const records = ref([])
@@ -62,13 +68,42 @@ const formatDate = (dateString) => {
   }).replace(/\//g, '-')
 }
 
+// 取得本週日期範圍（週一到週日）
+const getThisWeekRange = () => {
+  const today = new Date()
+  const dayOfWeek = today.getDay() // 0 = Sunday, 1 = Monday, ...
+
+  // Calculate Monday of this week
+  // If Sunday (0), go back 6 days; otherwise go back (dayOfWeek - 1) days
+  const mondayOffset = dayOfWeek === 0 ? -6 : -(dayOfWeek - 1)
+  const monday = new Date(today)
+  monday.setDate(today.getDate() + mondayOffset)
+
+  // Sunday is 6 days after Monday
+  const sunday = new Date(monday)
+  sunday.setDate(monday.getDate() + 6)
+
+  const formatYMD = (d) => {
+    const year = d.getFullYear()
+    const month = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+
+  return {
+    startDate: formatYMD(monday),
+    endDate: formatYMD(sunday),
+  }
+}
+
 // 載入工作紀錄
 const loadRecords = async () => {
   isReady.value = false
   const startTime = Date.now()
 
   try {
-    const response = await getWorkRecords({ limit: 50 })
+    const { startDate, endDate } = getThisWeekRange()
+    const response = await getWorkRecords({ startDate, endDate })
     const workRecords = response.data.work_records || []
 
     // 轉換資料格式
@@ -129,16 +164,6 @@ onUnmounted(() => {
     min-height: 0;
     display: flex;
     flex-direction: column;
-
-    .table-container {
-      height: fit-content;
-      max-height: 100%;
-      overflow: visible;
-      background: #ffffff;
-      border-radius: 8px;
-      padding: 16px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    }
   }
 
   .right-panel {

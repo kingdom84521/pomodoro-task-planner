@@ -8,6 +8,7 @@ import Settings from './views/Settings.vue'
 import PomodoroSettings from './views/settings/PomodoroSettings.vue'
 import ResourceManagement from './views/settings/ResourceManagement.vue'
 import MeetingSettings from './views/settings/MeetingSettings.vue'
+import TimeSettings from './views/settings/TimeSettings.vue'
 
 const routes = [
   {
@@ -55,6 +56,11 @@ const routes = [
         path: 'meetings',
         name: 'MeetingSettings',
         component: MeetingSettings
+      },
+      {
+        path: 'time',
+        name: 'TimeSettings',
+        component: TimeSettings
       }
     ]
   }

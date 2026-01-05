@@ -1,61 +1,45 @@
 <template>
   <div class="today-meeting-list">
     <div class="section-header">
-      <div class="header-left">
-        <span class="section-icon">🕐</span>
-        <h3 class="section-title">今日會議</h3>
-      </div>
-      <router-link to="/meetings" class="manage-link">
-        管理 →
-      </router-link>
+      <span class="section-icon">🕐</span>
+      <h3 class="section-title">今日會議</h3>
     </div>
 
     <div class="list-content">
       <BounceLoading v-if="loading" />
-      <div v-else-if="meetings.length === 0" class="empty-state">
+      <div v-else-if="sortedMeetings.length === 0" class="empty-state">
         今日無會議
       </div>
-      <DataTable v-else :data="meetings">
-        <el-table-column prop="scheduled_time" label="時間" width="80" align="center">
-          <template #default="{ row }">
-            <span class="time-text">{{ row.scheduled_time }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="名稱" min-width="150">
-          <template #default="{ row }">
-            <span :class="{ 'completed-text': row.status === 'completed' }">
-              {{ row.meeting?.title }}
-            </span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="類型" min-width="80" align="center">
-          <template #default="{ row }">
-            <span class="type-tag" :class="row.meeting?.meeting_type">
-              {{ row.meeting?.meeting_type === 'recurring' ? '例行' : '一次性' }}
-            </span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="狀態" min-width="80" align="center">
-          <template #default="{ row }">
-            <span class="status-tag" :class="row.status">
-              {{ getStatusText(row.status) }}
-            </span>
-          </template>
-        </el-table-column>
-      </DataTable>
+      <div v-else class="card-list">
+        <div
+          v-for="item in sortedMeetings"
+          :key="item.id"
+          class="meeting-card"
+          :class="item.status"
+          @click="navigateToMeetings"
+        >
+          <div class="card-content">
+            <div class="card-title">{{ item.meeting?.title }}</div>
+            <div class="card-footer">
+              <span class="card-status" :class="getStatusClass(item)">
+                {{ getStatusText(item) }}
+              </span>
+              <span class="card-arrow">→</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
-import DataTable from './DataTable.vue'
+import { useRouter } from 'vue-router'
 import BounceLoading from './BounceLoading.vue'
 import { useMeetingsStore } from '../stores/meetings'
 
+const router = useRouter()
 const meetingsStore = useMeetingsStore()
 
 // Loading state
@@ -64,15 +48,39 @@ const loading = computed(() => meetingsStore.loadingToday)
 // Today's meetings
 const meetings = computed(() => meetingsStore.todayMeetingsSorted || [])
 
-// Get status text
-const getStatusText = (status) => {
-  const statusMap = {
-    pending: '待開始',
-    in_progress: '進行中',
-    completed: '已結束',
-    skipped: '已跳過',
+// 排序：未完成的放前面
+const sortedMeetings = computed(() => {
+  return [...meetings.value].sort((a, b) => {
+    if (a.status === 'pending' && b.status !== 'pending') return -1
+    if (a.status !== 'pending' && b.status === 'pending') return 1
+    return 0
+  })
+})
+
+// 取得狀態 class
+const getStatusClass = (item) => {
+  if (item.status === 'completed') return 'completed'
+  return 'pending'
+}
+
+// 取得狀態文字
+const getStatusText = (item) => {
+  if (item.status === 'completed') return '已結束'
+
+  // 比較時間
+  const now = new Date()
+  const [hours, minutes] = item.scheduled_time.split(':').map(Number)
+  const scheduledTime = new Date()
+  scheduledTime.setHours(hours, minutes, 0, 0)
+
+  if (now < scheduledTime) {
+    return `將開始於 ${item.scheduled_time}`
   }
-  return statusMap[status] || status
+  return '尚未開會'
+}
+
+const navigateToMeetings = () => {
+  router.push('/meetings')
 }
 
 onMounted(() => {
@@ -91,20 +99,15 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  min-width: 270px;
 }
 
 .section-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 16px;
   padding: 0 12px;
-
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
 
   .section-icon {
     font-size: 18px;
@@ -116,20 +119,10 @@ onUnmounted(() => {
     font-weight: 600;
     color: #303133;
   }
-
-  .manage-link {
-    color: #409eff;
-    font-size: 14px;
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
 }
 
 .list-content {
-  min-height: 100px;
+  /* No fixed min-height - let content determine height */
 }
 
 .empty-state {
@@ -138,57 +131,67 @@ onUnmounted(() => {
   padding: 24px;
 }
 
-.time-text {
-  font-family: 'Courier New', monospace;
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meeting-card {
+  background: #f5f5f5;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    filter: brightness(0.97);
+  }
+
+  &.pending {
+    background: #ecf5ff;
+    border-color: #b3d8ff;
+  }
+
+  &.completed {
+    background: #f5f5f5;
+    border-color: #e0e0e0;
+  }
+}
+
+.card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.card-title {
+  font-size: 14px;
   font-weight: 500;
   color: #303133;
 }
 
-.completed-text {
-  text-decoration: line-through;
-  color: #909399;
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-.type-tag {
-  padding: 2px 8px;
-  border-radius: 4px;
+.card-status {
   font-size: 12px;
-
-  &.recurring {
-    background: #ecf5ff;
-    color: #409eff;
-  }
-
-  &.one-time {
-    background: #f5f7fa;
-    color: #606266;
-  }
-}
-
-.status-tag {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-
-  &.pending {
-    background: #fdf6ec;
-    color: #e6a23c;
-  }
-
-  &.in_progress {
-    background: #d1fae5;
-    color: #10b981;
-  }
 
   &.completed {
-    background: #f0f9eb;
-    color: #67c23a;
+    color: #909399;
   }
 
-  &.skipped {
-    background: #f5f7fa;
-    color: #909399;
+  &.pending {
+    color: #5a9cf8;
   }
 }
 
+.card-arrow {
+  font-size: 14px;
+  color: #909399;
+}
 </style>

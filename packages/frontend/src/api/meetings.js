@@ -95,6 +95,22 @@ export const skipMeeting = (instanceId) => {
   return apiClient.post(`/meetings/instances/${instanceId}/skip`)
 }
 
+/**
+ * Start a meeting now (create ad-hoc instance and start it)
+ * @param {number} meetingId - Meeting ID
+ */
+export const startMeetingNow = (meetingId) => {
+  return apiClient.post(`/meetings/${meetingId}/start-now`)
+}
+
+/**
+ * Convert a one-time meeting to a recurring meeting
+ * @param {number} meetingId - Meeting ID
+ */
+export const convertToRecurring = (meetingId) => {
+  return apiClient.post(`/meetings/${meetingId}/convert-to-recurring`)
+}
+
 export default {
   getMeetings,
   getMeetingById,
@@ -107,4 +123,6 @@ export default {
   startMeeting,
   endMeeting,
   skipMeeting,
+  startMeetingNow,
+  convertToRecurring,
 }

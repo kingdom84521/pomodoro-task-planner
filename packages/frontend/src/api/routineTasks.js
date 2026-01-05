@@ -75,6 +75,14 @@ export const uncompleteInstance = (instanceId) => {
   return apiClient.post(`/routine-tasks/instances/${instanceId}/uncomplete`)
 }
 
+/**
+ * Execute a routine task instance now (clear scheduled_at)
+ * @param {number} instanceId - Instance ID
+ */
+export const executeInstanceNow = (instanceId) => {
+  return apiClient.post(`/routine-tasks/instances/${instanceId}/execute-now`)
+}
+
 export default {
   getRoutineTasks,
   getRoutineTaskById,
@@ -85,4 +93,5 @@ export default {
   completeInstance,
   skipInstance,
   uncompleteInstance,
+  executeInstanceNow,
 }

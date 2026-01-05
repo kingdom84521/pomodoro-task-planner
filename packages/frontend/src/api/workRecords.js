@@ -3,7 +3,9 @@ import apiClient from './axios'
 /**
  * Get all work records
  * @param {Object} params - Query parameters
- * @param {number} params.limit - Maximum number of records to return
+ * @param {string} params.startDate - Start date (YYYY-MM-DD), inclusive
+ * @param {string} params.endDate - End date (YYYY-MM-DD), inclusive
+ * @param {number} params.limit - Maximum number of records (optional)
  * @param {number} params.offset - Number of records to skip
  */
 export const getWorkRecords = (params = {}) => {

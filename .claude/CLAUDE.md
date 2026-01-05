@@ -81,6 +81,28 @@
 
 ---
 
+### Drizzle PostgreSQL Schema 重構
+**優先級**: 技術債
+**狀態**: 待實現
+
+**現況問題**:
+- `database/schema.js` 使用 `sqliteTable`（SQLite 專用語法）
+- PostgreSQL 建表目前用 raw SQL（在 `drizzle.js` 的 `createPostgresTables()`）
+- 這不是正確的 Drizzle 使用方式
+
+**正確做法**:
+1. 新增 `database/schema.postgres.js`，使用 `pgTable` 定義 schema
+2. 修改 `drizzle.js` 根據 `DB_MODE` 動態載入對應的 schema
+3. 更新 `drizzle.config.js` 支援 PostgreSQL dialect
+4. 使用 `drizzle-kit push` 或 `drizzle-kit migrate` 來同步 schema
+
+**相關檔案**:
+- `packages/backend/database/schema.js` - 現有 SQLite schema
+- `packages/backend/database/drizzle.js` - 資料庫連線與建表邏輯
+- `packages/backend/drizzle.config.js` - Drizzle Kit 設定
+
+---
+
 ## 已完成功能
 
 ### 2025-12-27

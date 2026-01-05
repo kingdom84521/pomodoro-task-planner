@@ -5,7 +5,7 @@
       <el-button type="primary" @click="openCreateDialog" :disabled="totalPercentage >= 100">新增資源</el-button>
     </div>
 
-    <el-table :data="resources" border style="width: 60%">
+    <el-table :data="resources" border style="width: 60%" empty-text="尚無資源分群">
       <el-table-column prop="name" label="資源名稱" min-width="35" />
       <el-table-column prop="percentage_limit" label="百分比上限 (%)" min-width="30" align="center">
         <template #default="{ row }">

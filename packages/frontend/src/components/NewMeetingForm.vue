@@ -1,10 +1,17 @@
 <template>
   <div class="new-meeting-form">
-    <h3 class="form-title">新增會議</h3>
+    <div class="form-header">
+      <h3 class="form-title">新增會議</h3>
+    </div>
 
     <el-form :model="form" label-position="top" @submit.prevent="handleSubmit">
       <el-form-item label="會議名稱" required>
-        <el-input v-model="form.title" placeholder="輸入會議名稱" />
+        <el-input
+          v-model="form.title"
+          placeholder="請輸入會議名稱"
+          :maxlength="200"
+          show-word-limit
+        />
       </el-form-item>
 
       <el-form-item label="類型">
@@ -15,61 +22,20 @@
       </el-form-item>
 
       <el-form-item label="開始時間" required>
-        <el-time-select
+        <el-time-picker
           v-model="form.scheduled_time"
-          start="06:00"
-          step="00:15"
-          end="23:45"
           placeholder="選擇時間"
-          style="width: 100%"
+          format="HH:mm"
+          value-format="HH:mm"
         />
       </el-form-item>
 
       <!-- Recurrence options (for recurring meetings) -->
-      <template v-if="form.meeting_type === 'recurring'">
-        <div class="recurrence-section">
-          <el-form-item label="週期類型">
-            <el-radio-group v-model="recurrenceType">
-              <el-radio label="daily">每天</el-radio>
-              <el-radio label="weekly">每週</el-radio>
-              <el-radio label="interval">每 N 天</el-radio>
-              <el-radio label="advanced">進階</el-radio>
-            </el-radio-group>
-          </el-form-item>
-
-          <el-form-item
-            v-if="recurrenceType === 'weekly' || recurrenceType === 'advanced'"
-            label="星期"
-          >
-            <el-checkbox-group v-model="selectedDays">
-              <el-checkbox :label="1">一</el-checkbox>
-              <el-checkbox :label="2">二</el-checkbox>
-              <el-checkbox :label="3">三</el-checkbox>
-              <el-checkbox :label="4">四</el-checkbox>
-              <el-checkbox :label="5">五</el-checkbox>
-              <el-checkbox :label="6">六</el-checkbox>
-              <el-checkbox :label="0">日</el-checkbox>
-            </el-checkbox-group>
-          </el-form-item>
-
-          <el-form-item v-if="recurrenceType === 'interval'" label="間隔天數">
-            <el-input-number
-              v-model="intervalDays"
-              :min="1"
-              :max="365"
-              style="width: 100%"
-            />
-          </el-form-item>
-
-          <el-form-item v-if="recurrenceType === 'advanced'" label="週數篩選">
-            <el-radio-group v-model="weekFilterType">
-              <el-radio label="all">全部</el-radio>
-              <el-radio label="odd">奇數週</el-radio>
-              <el-radio label="even">偶數週</el-radio>
-            </el-radio-group>
-          </el-form-item>
-        </div>
-      </template>
+      <RecurrenceRuleEditor
+        v-if="form.meeting_type === 'recurring'"
+        v-model="recurrenceRule"
+        class="recurrence-editor-spacing"
+      />
 
       <!-- Date picker (for one-time meetings) -->
       <el-form-item v-if="form.meeting_type === 'one-time'" label="日期" required>
@@ -93,99 +59,135 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useMeetingsStore } from '../stores/meetings'
+import RecurrenceRuleEditor from './RecurrenceRuleEditor.vue'
 
 const emit = defineEmits(['created'])
 const meetingsStore = useMeetingsStore()
 
 const loading = ref(false)
 
-// Form data
-const form = reactive({
-  title: '',
-  meeting_type: 'recurring',
-  scheduled_time: '',
-  scheduled_date: '',
-})
+// localStorage keys
+const STORAGE_KEY_FORM = 'newMeetingForm:formData'
+const STORAGE_KEY_RECURRENCE = 'newMeetingForm:recurrenceRule'
 
-// Recurrence options
-const recurrenceType = ref('daily')
-const selectedDays = ref([1, 2, 3, 4, 5]) // Default: weekdays
-const intervalDays = ref(1)
-const weekFilterType = ref('all')
-
-// Build recurrence rule
-const buildRecurrenceRule = () => {
-  if (form.meeting_type === 'one-time') return null
-
-  const rule = {
-    frequency: recurrenceType.value === 'advanced' ? 'weekly' : recurrenceType.value,
-  }
-
-  if (recurrenceType.value === 'weekly' || recurrenceType.value === 'advanced') {
-    if (selectedDays.value.length > 0) {
-      rule.daysOfWeek = [...selectedDays.value].sort((a, b) => a - b)
+// Load saved data from localStorage (synchronous to avoid flash)
+const loadSavedFormData = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_FORM)
+    if (saved) {
+      return JSON.parse(saved)
     }
+  } catch (e) {
+    console.error('Failed to load saved form data:', e)
   }
+  return { title: '', meeting_type: 'recurring', scheduled_time: '', scheduled_date: '' }
+}
 
-  if (recurrenceType.value === 'interval') {
-    rule.interval = intervalDays.value
-  }
-
-  if (recurrenceType.value === 'advanced' && weekFilterType.value !== 'all') {
-    rule.weekFilter = {
-      type: weekFilterType.value,
+const loadSavedRecurrenceRule = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_RECURRENCE)
+    if (saved) {
+      return JSON.parse(saved)
     }
+  } catch (e) {
+    console.error('Failed to load saved recurrence rule:', e)
   }
+  return { frequency: 'daily' }
+}
 
-  return rule
+// Form data - initialized from localStorage
+const form = ref(loadSavedFormData())
+
+// Recurrence rule (for recurring meetings) - initialized from localStorage
+const recurrenceRule = ref(loadSavedRecurrenceRule())
+
+// Watch and save form data to localStorage
+watch(form, (newValue) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_FORM, JSON.stringify(newValue))
+  } catch (e) {
+    console.error('Failed to save form data:', e)
+  }
+}, { deep: true })
+
+watch(recurrenceRule, (newValue) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_RECURRENCE, JSON.stringify(newValue))
+  } catch (e) {
+    console.error('Failed to save recurrence rule:', e)
+  }
+}, { deep: true })
+
+// Reset form (also clears localStorage)
+const resetForm = () => {
+  form.value = {
+    title: '',
+    meeting_type: 'recurring',
+    scheduled_time: '',
+    scheduled_date: '',
+  }
+  recurrenceRule.value = { frequency: 'daily' }
+  // Clear localStorage
+  localStorage.removeItem(STORAGE_KEY_FORM)
+  localStorage.removeItem(STORAGE_KEY_RECURRENCE)
 }
 
 // Handle submit
 const handleSubmit = async () => {
-  if (!form.title.trim()) {
+  if (!form.value.title.trim()) {
     ElMessage.warning('請輸入會議名稱')
     return
   }
 
-  if (!form.scheduled_time) {
+  if (!form.value.scheduled_time) {
     ElMessage.warning('請選擇開始時間')
     return
   }
 
-  if (form.meeting_type === 'one-time' && !form.scheduled_date) {
+  if (form.value.meeting_type === 'one-time' && !form.value.scheduled_date) {
     ElMessage.warning('請選擇日期')
     return
   }
 
-  if (form.meeting_type === 'recurring' &&
-      (recurrenceType.value === 'weekly' || recurrenceType.value === 'advanced') &&
-      selectedDays.value.length === 0) {
-    ElMessage.warning('請至少選擇一天')
-    return
+  // Validate recurrence rule for recurring meetings
+  if (form.value.meeting_type === 'recurring') {
+    const rule = recurrenceRule.value
+    if (rule.frequency === 'weekly' && (!rule.byweekday || rule.byweekday.length === 0)) {
+      ElMessage.warning('請至少選擇一天')
+      return
+    }
+    if ((rule.frequency === 'monthly' || rule.frequency === 'yearly') &&
+        (!rule.bymonthday || rule.bymonthday.length === 0) &&
+        (!rule.byweekday || rule.byweekday.length === 0)) {
+      ElMessage.warning('請選擇日期或星期')
+      return
+    }
+    if (rule.frequency === 'yearly' && (!rule.bymonth || rule.bymonth.length === 0)) {
+      ElMessage.warning('請選擇至少一個月份')
+      return
+    }
   }
 
   loading.value = true
 
   try {
     const data = {
-      title: form.title.trim(),
-      meeting_type: form.meeting_type,
-      scheduled_time: form.scheduled_time,
-      recurrence_rule: buildRecurrenceRule(),
-      scheduled_date: form.meeting_type === 'one-time' ? form.scheduled_date : null,
+      title: form.value.title.trim(),
+      meeting_type: form.value.meeting_type,
+      scheduled_time: form.value.scheduled_time,
+      recurrence_rule: form.value.meeting_type === 'recurring' ? recurrenceRule.value : null,
+      scheduled_date: form.value.meeting_type === 'one-time' ? form.value.scheduled_date : null,
       is_active: true,
     }
 
     const meeting = await meetingsStore.createMeeting(data)
     emit('created', meeting)
 
-    // Reset form
-    form.title = ''
-    form.scheduled_time = ''
-    form.scheduled_date = ''
+    // Reset form and clear localStorage
+    resetForm()
   } catch (error) {
     console.error('Failed to create meeting:', error)
     ElMessage.error('建立會議失敗')
@@ -197,47 +199,31 @@ const handleSubmit = async () => {
 
 <style scoped>
 .new-meeting-form {
-  background: white;
+  background: #ffffff;
   border-radius: 8px;
-  padding: 20px;
+  padding: 24px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
+  height: fit-content;
 
-.form-title {
-  margin: 0 0 20px 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
+  .form-header {
+    margin-bottom: 20px;
 
-.new-meeting-form {
-  --el-text-color-regular: #606266;
-}
-
-.recurrence-section {
-  background: #f5f7fa;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 16px;
-
-  :deep(.el-form-item) {
-    margin-bottom: 12px;
-
-    &:last-child {
-      margin-bottom: 0;
+    .form-title {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      color: #303133;
     }
   }
 
-  :deep(.el-radio-group) {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+  --el-text-color-regular: #606266;
+
+  .recurrence-editor-spacing {
+    margin-bottom: 18px;
   }
 
-  :deep(.el-checkbox-group) {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+  :deep(.el-form-item:last-child) {
+    margin-bottom: 0;
   }
 }
 </style>

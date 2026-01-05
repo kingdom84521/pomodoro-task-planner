@@ -25,18 +25,29 @@
         </div>
       </div>
       <nav class="settings-nav">
-        <router-link to="/settings/pomodoro" class="nav-item">
-          <span class="nav-icon">🍅</span>
-          <span class="nav-text">番茄鐘</span>
-        </router-link>
-        <router-link to="/settings/meetings" class="nav-item">
-          <span class="nav-icon">🕐</span>
-          <span class="nav-text">會議設定</span>
-        </router-link>
-        <router-link to="/settings/resources" class="nav-item">
-          <span class="nav-icon">📁</span>
-          <span class="nav-text">資源管理</span>
-        </router-link>
+        <div class="nav-section">
+          <div class="nav-section-title">偏好設定</div>
+          <router-link to="/settings/pomodoro" class="nav-item">
+            <span class="nav-icon">🍅</span>
+            <span class="nav-text">番茄鐘</span>
+          </router-link>
+          <router-link to="/settings/meetings" class="nav-item">
+            <span class="nav-icon">🕐</span>
+            <span class="nav-text">會議提醒</span>
+          </router-link>
+          <router-link to="/settings/time" class="nav-item">
+            <span class="nav-icon">⏰</span>
+            <span class="nav-text">時間設定</span>
+          </router-link>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">資料管理</div>
+          <router-link to="/settings/resources" class="nav-item">
+            <span class="nav-icon">📁</span>
+            <span class="nav-text">資源分類</span>
+          </router-link>
+        </div>
       </nav>
     </div>
     <div class="settings-content">
@@ -125,7 +136,24 @@ const handleDownload = async () => {
     .settings-nav {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 4px;
+
+      .nav-section {
+        &:not(:first-child) {
+          margin-top: 16px;
+          padding-top: 16px;
+          border-top: 1px solid #ebeef5;
+        }
+      }
+
+      .nav-section-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: #909399;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 0 16px 8px;
+      }
 
       .nav-item {
         display: flex;

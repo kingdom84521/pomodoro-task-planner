@@ -1,0 +1,7 @@
+/* Element Plus Select Override */
+
+.d-flex {
+  .el-select-dropdown__footer {
+    display: flex;
+  }
+}
