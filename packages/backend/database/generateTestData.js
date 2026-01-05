@@ -418,7 +418,10 @@ async function generateTestData() {
     const isWeekend = date.getDay() === 0 || date.getDay() === 6
 
     // Generate work records (more on weekdays)
-    const numRecords = isWeekend ? randomInt(0, 3) : randomInt(2, 6)
+    // 6 hours = 360 minutes = ~14-15 pomodoros (25 min each)
+    // Weekdays: 14-18 records (5.8-7.5 hours)
+    // Weekends: 8-12 records (3.3-5 hours)
+    const numRecords = isWeekend ? randomInt(8, 12) : randomInt(14, 18)
 
     for (let j = 0; j < numRecords; j++) {
       // Pick a random resource group with weighted probabilities
