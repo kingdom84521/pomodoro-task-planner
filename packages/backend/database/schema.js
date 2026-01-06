@@ -21,6 +21,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   routineTaskInstances: many(routineTaskInstances),
   meetings: many(meetings),
   meetingInstances: many(meetingInstances),
+  taskPriorities: many(taskPriorities),
 }))
 
 // ========== RESOURCE GROUPS ==========
@@ -229,6 +230,23 @@ export const cronJobLog = sqliteTable('cron_job_log', {
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 })
 
+// ========== TASK PRIORITIES ==========
+export const taskPriorities = sqliteTable('task_priorities', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: integer('user_id').notNull().references(() => users.id),
+  targetType: text('target_type').notNull(), // 'simple' | 'routine'
+  targetId: integer('target_id').notNull(),
+  priorityScore: real('priority_score').default(0),
+  calculatedAt: integer('calculated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+export const taskPrioritiesRelations = relations(taskPriorities, ({ one }) => ({
+  user: one(users, {
+    fields: [taskPriorities.userId],
+    references: [users.id],
+  }),
+}))
+
 // Export all tables for schema reference
 export const schema = {
   users,
@@ -241,4 +259,5 @@ export const schema = {
   meetingInstances,
   dailyAnalytics,
   cronJobLog,
+  taskPriorities,
 }

@@ -322,11 +322,11 @@ export async function getTodayInstances(userId) {
 
   const db = await getDb()
 
-  // Get all active routine tasks
+  // Get all routine tasks (including paused ones, so they show in task list)
   const tasksResult = await db
     .select()
     .from(routineTasks)
-    .where(and(eq(routineTasks.userId, userId), eq(routineTasks.isActive, true)))
+    .where(eq(routineTasks.userId, userId))
 
   const instances = []
 
@@ -391,6 +391,7 @@ export async function getTodayInstances(userId) {
         resource_group_id: task.resourceGroupId,
         recurrence_rule: task.recurrenceRule,
         starts_at: task.startsAt,
+        is_active: task.isActive,
       },
     })
   }

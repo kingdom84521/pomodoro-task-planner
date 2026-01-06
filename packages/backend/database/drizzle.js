@@ -226,6 +226,17 @@ async function createSqliteTables() {
       created_at INTEGER
     );
 
+    -- Task priorities table (unified priority scores for all task types)
+    CREATE TABLE IF NOT EXISTS task_priorities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      target_type TEXT NOT NULL,
+      target_id INTEGER NOT NULL,
+      priority_score REAL DEFAULT 0,
+      calculated_at INTEGER,
+      UNIQUE(user_id, target_type, target_id)
+    );
+
     -- Create indexes for common queries
     CREATE INDEX IF NOT EXISTS idx_resource_groups_user_id ON resource_groups(user_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);
@@ -238,6 +249,8 @@ async function createSqliteTables() {
     CREATE INDEX IF NOT EXISTS idx_meeting_instances_scheduled_date ON meeting_instances(scheduled_date);
     CREATE INDEX IF NOT EXISTS idx_daily_analytics_user_date ON daily_analytics(user_id, date);
     CREATE INDEX IF NOT EXISTS idx_cron_job_log_job_name ON cron_job_log(job_name, status);
+    CREATE INDEX IF NOT EXISTS idx_task_priorities_user_id ON task_priorities(user_id);
+    CREATE INDEX IF NOT EXISTS idx_task_priorities_score ON task_priorities(user_id, priority_score);
   `)
 
   console.log('✓ SQLite tables created')
@@ -375,6 +388,17 @@ async function createPostgresTables(database) {
       error_message TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- Task priorities table
+    CREATE TABLE IF NOT EXISTS task_priorities (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT NOT NULL,
+      target_id INTEGER NOT NULL,
+      priority_score REAL DEFAULT 0,
+      calculated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, target_type, target_id)
+    );
   `)
 
   // Create indexes (separate statements for PostgreSQL)
@@ -390,6 +414,8 @@ async function createPostgresTables(database) {
     'CREATE INDEX IF NOT EXISTS idx_meeting_instances_scheduled_date ON meeting_instances(scheduled_date)',
     'CREATE INDEX IF NOT EXISTS idx_daily_analytics_user_date ON daily_analytics(user_id, date)',
     'CREATE INDEX IF NOT EXISTS idx_cron_job_log_job_name ON cron_job_log(job_name, status)',
+    'CREATE INDEX IF NOT EXISTS idx_task_priorities_user_id ON task_priorities(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_task_priorities_score ON task_priorities(user_id, priority_score)',
   ]
 
   for (const indexSql of indexes) {

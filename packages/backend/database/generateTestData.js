@@ -26,6 +26,7 @@ import { getDb } from './drizzle.js'
 import {
   users,
   resourceGroups,
+  tasks,
   workRecords,
   routineTasks,
   routineTaskInstances,
@@ -34,6 +35,7 @@ import {
   dailyAnalytics,
 } from './schema.js'
 import { backfillMissingDates } from '../services/dailyAnalyticsService.js'
+import { refreshAllPriorities } from '../services/taskPriorityService.js'
 
 // Parse command line arguments
 function parseArgs() {
@@ -45,6 +47,9 @@ function parseArgs() {
     quarters: 4, // Default to 4 quarters (1 year) from quarter year start
     userId: 1,
     clearAll: false,
+    completeToday: false,
+    addSimpleTasks: false,
+    exhaustCategory: null, // Resource category name to exhaust
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -67,6 +72,15 @@ function parseArgs() {
       case '--clear-all':
         options.clearAll = true
         break
+      case '--complete-today':
+        options.completeToday = true
+        break
+      case '--add-simple-tasks':
+        options.addSimpleTasks = true
+        break
+      case '--exhaust-category':
+        options.exhaustCategory = args[++i]
+        break
       case '--help':
       case '-h':
         console.log(`
@@ -82,6 +96,9 @@ Options:
   --quarters <number>           Number of quarters to generate (default: 4)
   --user-id <number>            User ID to generate data for (default: 1)
   --clear-all                   Clear ALL existing data before generating
+  --complete-today              Complete all today's routine task instances
+  --add-simple-tasks            Add some simple tasks for testing sorting
+  --exhaust-category <name>     Add work records to exhaust a resource category (e.g., 工作)
 
 Examples:
   # Default: Generate 4 quarters (1 year) of past data plus current quarter up to today
@@ -96,6 +113,12 @@ Examples:
 
   # Clear all data and regenerate
   node packages/backend/database/generateTestData.js --clear-all
+
+  # Complete all today's routine tasks (for testing sorting)
+  node packages/backend/database/generateTestData.js --complete-today
+
+  # Exhaust a resource category (makes it exceed its percentage limit)
+  node packages/backend/database/generateTestData.js --exhaust-category 工作
         `)
         process.exit(0)
     }
@@ -521,13 +544,309 @@ async function generateTestData() {
   console.log('\n⏳ Calculating daily analytics (this may take a moment)...')
   await backfillMissingDates(options.userId, allDates)
 
+  // Calculate task priorities
+  console.log('\n⏳ Calculating task priorities...')
+  await refreshAllPriorities(options.userId)
+
   console.log('\n✅ Test data generation completed!')
   console.log('🔄 Please restart the frontend and refresh the Statistics page.')
 
   process.exit(0)
 }
 
-generateTestData().catch((err) => {
-  console.error('❌ Error generating test data:', err)
-  process.exit(1)
-})
+/**
+ * Complete all today's routine task instances and add work records
+ */
+async function completeTodayRoutines() {
+  const options = parseArgs()
+  const db = await getDb()
+  const today = formatDate(new Date())
+
+  console.log('🍅 Completing today\'s routine tasks with work records...')
+  console.log(`   User ID: ${options.userId}`)
+  console.log(`   Date: ${today}`)
+  console.log('')
+
+  // Get all active routine tasks for the user
+  const routines = await db
+    .select()
+    .from(routineTasks)
+    .where(and(eq(routineTasks.userId, options.userId), eq(routineTasks.isActive, true)))
+
+  console.log(`📋 Found ${routines.length} active routine tasks`)
+
+  let completedInstances = 0
+  let createdInstances = 0
+  let workRecordsCreated = 0
+
+  for (const routine of routines) {
+    // Check if instance exists for today
+    const existing = await db
+      .select()
+      .from(routineTaskInstances)
+      .where(
+        and(
+          eq(routineTaskInstances.routineTaskId, routine.id),
+          eq(routineTaskInstances.scheduledDate, today)
+        )
+      )
+
+    const completedAt = new Date()
+
+    if (existing.length > 0) {
+      // Update existing instance to completed
+      await db
+        .update(routineTaskInstances)
+        .set({
+          status: 'completed',
+          completedAt,
+        })
+        .where(eq(routineTaskInstances.id, existing[0].id))
+      completedInstances++
+    } else {
+      // Create new completed instance
+      await db.insert(routineTaskInstances).values({
+        routineTaskId: routine.id,
+        userId: options.userId,
+        scheduledDate: today,
+        status: 'completed',
+        completedAt,
+        createdAt: new Date(),
+      })
+      createdInstances++
+    }
+
+    // Add work record for this routine task
+    await db.insert(workRecords).values({
+      userId: options.userId,
+      taskName: routine.title,
+      duration: POMODORO_DURATION,
+      resourceGroupId: routine.resourceGroupId,
+      completedAt,
+      createdAt: new Date(),
+    })
+    workRecordsCreated++
+
+    console.log(`   ✅ ${routine.title} (+ 1 pomodoro)`)
+  }
+
+  console.log('')
+  console.log(`📊 Summary:`)
+  console.log(`   - Instances updated: ${completedInstances}`)
+  console.log(`   - Instances created: ${createdInstances}`)
+  console.log(`   - Work records added: ${workRecordsCreated}`)
+
+  // Calculate task priorities
+  console.log('')
+  console.log('⏳ Calculating task priorities...')
+  await refreshAllPriorities(options.userId)
+
+  console.log('')
+  console.log('✅ Done! Refresh the task list to see the sorting.')
+
+  process.exit(0)
+}
+
+/**
+ * Add some simple tasks for testing sorting
+ */
+async function addSimpleTasks() {
+  const options = parseArgs()
+  const db = await getDb()
+
+  console.log('📝 Adding simple tasks...')
+  console.log(`   User ID: ${options.userId}`)
+  console.log('')
+
+  // Get resource groups
+  const groups = await db
+    .select()
+    .from(resourceGroups)
+    .where(eq(resourceGroups.userId, options.userId))
+
+  const groupMap = {}
+  for (const g of groups) {
+    groupMap[g.name] = g.id
+  }
+
+  // Simple tasks to add
+  const simpleTasks = [
+    { title: '回覆重要郵件', status: '待處理', group: '工作' },
+    { title: '整理專案文件', status: '進行中', group: '工作' },
+    { title: '學習 TypeScript', status: '待處理', group: '學習' },
+    { title: '買菜', status: '待處理', group: '生活' },
+  ]
+
+  let created = 0
+  for (const task of simpleTasks) {
+    await db.insert(tasks).values({
+      userId: options.userId,
+      title: task.title,
+      status: task.status,
+      resourceGroupId: groupMap[task.group] || null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    created++
+    console.log(`   ✅ Created: ${task.title} (${task.status})`)
+  }
+
+  console.log('')
+  console.log(`📊 Created ${created} simple tasks`)
+
+  // Calculate task priorities
+  console.log('')
+  console.log('⏳ Calculating task priorities...')
+  await refreshAllPriorities(options.userId)
+
+  console.log('')
+  console.log('✅ Done! Refresh the task list to see the sorting.')
+
+  process.exit(0)
+}
+
+/**
+ * Exhaust a resource category by adding many work records
+ * This makes the category exceed its percentage limit for testing priority sorting
+ */
+async function exhaustCategory() {
+  const options = parseArgs()
+  const db = await getDb()
+  const categoryName = options.exhaustCategory
+
+  console.log(`🔥 Exhausting resource category: ${categoryName}`)
+  console.log(`   User ID: ${options.userId}`)
+  console.log('')
+
+  // Get resource groups
+  const groups = await db
+    .select()
+    .from(resourceGroups)
+    .where(eq(resourceGroups.userId, options.userId))
+
+  const targetGroup = groups.find(g => g.name === categoryName)
+  if (!targetGroup) {
+    console.error(`❌ Resource group "${categoryName}" not found`)
+    console.log('   Available groups:', groups.map(g => g.name).join(', '))
+    process.exit(1)
+  }
+
+  console.log(`📊 Target group: ${targetGroup.name} (limit: ${targetGroup.percentageLimit}%)`)
+
+  // Calculate how many pomodoros we need to add to exceed the limit
+  // We'll add records spread over the last 7 days to affect the 7D period
+  const totalExistingRecords = await db
+    .select()
+    .from(workRecords)
+    .where(
+      and(
+        eq(workRecords.userId, options.userId),
+        gte(workRecords.completedAt, subDays(new Date(), 7))
+      )
+    )
+
+  const totalDuration = totalExistingRecords.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const targetGroupDuration = totalExistingRecords
+    .filter(r => r.resourceGroupId === targetGroup.id)
+    .reduce((sum, r) => sum + (r.duration || 0), 0)
+
+  const currentPercentage = totalDuration > 0 ? (targetGroupDuration / totalDuration) * 100 : 0
+  const limit = targetGroup.percentageLimit || 30
+
+  console.log(`   Current 7D usage: ${currentPercentage.toFixed(1)}%`)
+  console.log(`   Target: exceed ${limit}%`)
+
+  // Add enough records to exceed the limit by ~20%
+  // Each pomodoro is 25 minutes = 1500 seconds
+  const targetPercentage = limit + 20
+  const neededTotalForTarget = totalDuration > 0
+    ? (targetGroupDuration / (targetPercentage / 100)) - totalDuration
+    : POMODORO_DURATION * 50 // If no records, add 50 pomodoros
+
+  const pomodorosToAdd = Math.max(
+    Math.ceil(Math.abs(neededTotalForTarget) / POMODORO_DURATION),
+    30 // At minimum add 30 pomodoros
+  )
+
+  console.log(`   Adding ${pomodorosToAdd} pomodoros to ${categoryName}...`)
+
+  const taskNames = TASK_TEMPLATES[categoryName] || ['工作任務']
+  let added = 0
+
+  // Spread records over the last 7 days
+  for (let i = 0; i < pomodorosToAdd; i++) {
+    const daysAgo = Math.floor(Math.random() * 7)
+    const completedAt = subDays(new Date(), daysAgo)
+    completedAt.setHours(randomInt(9, 21), randomInt(0, 59), 0, 0)
+
+    await db.insert(workRecords).values({
+      userId: options.userId,
+      taskName: randomChoice(taskNames),
+      duration: POMODORO_DURATION,
+      resourceGroupId: targetGroup.id,
+      completedAt,
+      createdAt: new Date(),
+    })
+    added++
+  }
+
+  console.log(`   ✅ Added ${added} work records`)
+
+  // Recalculate to show new percentage
+  const newRecords = await db
+    .select()
+    .from(workRecords)
+    .where(
+      and(
+        eq(workRecords.userId, options.userId),
+        gte(workRecords.completedAt, subDays(new Date(), 7))
+      )
+    )
+
+  const newTotalDuration = newRecords.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const newTargetDuration = newRecords
+    .filter(r => r.resourceGroupId === targetGroup.id)
+    .reduce((sum, r) => sum + (r.duration || 0), 0)
+  const newPercentage = newTotalDuration > 0 ? (newTargetDuration / newTotalDuration) * 100 : 0
+
+  console.log('')
+  console.log(`📊 Result:`)
+  console.log(`   ${categoryName} usage (7D): ${currentPercentage.toFixed(1)}% → ${newPercentage.toFixed(1)}%`)
+  console.log(`   Limit: ${limit}%`)
+  console.log(`   Over limit: ${newPercentage > limit ? '✅ YES' : '❌ NO'}`)
+
+  // Calculate task priorities
+  console.log('')
+  console.log('⏳ Calculating task priorities...')
+  await refreshAllPriorities(options.userId)
+
+  console.log('')
+  console.log('✅ Done! Tasks in this category should now have lower priority.')
+  console.log('   Refresh the task list to see the sorting.')
+
+  process.exit(0)
+}
+
+// Main entry point
+const options = parseArgs()
+if (options.completeToday) {
+  completeTodayRoutines().catch((err) => {
+    console.error('❌ Error:', err)
+    process.exit(1)
+  })
+} else if (options.addSimpleTasks) {
+  addSimpleTasks().catch((err) => {
+    console.error('❌ Error:', err)
+    process.exit(1)
+  })
+} else if (options.exhaustCategory) {
+  exhaustCategory().catch((err) => {
+    console.error('❌ Error:', err)
+    process.exit(1)
+  })
+} else {
+  generateTestData().catch((err) => {
+    console.error('❌ Error generating test data:', err)
+    process.exit(1)
+  })
+}

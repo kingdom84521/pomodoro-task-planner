@@ -2,7 +2,7 @@ import express from 'express'
 import { asyncHandler } from '../middleware/errorHandler.js'
 import { successResponse } from '../utils/responseFormatter.js'
 import { createOrUpdateTask, getAllTasks } from '../services/taskService.js'
-import { getSortedTasks, refreshAllPriorities } from '../services/taskPriorityService.js'
+import { getSortedTasks, getSortedAllTasks, refreshAllPriorities } from '../services/taskPriorityService.js'
 
 const router = express.Router()
 
@@ -55,15 +55,30 @@ router.get('/', asyncHandler(async (req, res) => {
 }))
 
 /**
+ * GET /api/tasks/sorted
+ * Get all tasks (simple + routine) sorted by priority score
+ * Returns unified format for all task types
+ */
+router.get('/sorted', asyncHandler(async (req, res) => {
+  const tasks = await getSortedAllTasks(req.user.id)
+
+  res.json(successResponse({
+    tasks,
+    count: tasks.length,
+  }))
+}))
+
+/**
  * POST /api/tasks/refresh-priorities
  * Manually refresh all task priorities
  */
 router.post('/refresh-priorities', asyncHandler(async (req, res) => {
-  const tasksWithRanks = await refreshAllPriorities(req.user.id)
+  await refreshAllPriorities(req.user.id)
+  const tasks = await getSortedAllTasks(req.user.id)
 
   res.json(successResponse({
-    updated: tasksWithRanks.length,
-    tasks: tasksWithRanks,
+    updated: tasks.length,
+    tasks,
   }))
 }))
 

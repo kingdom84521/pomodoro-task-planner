@@ -1,6 +1,7 @@
 import { eq, and, desc, count, gte, lte } from 'drizzle-orm'
 import { getDb, workRecords } from '../database/drizzle.js'
 import { updateDailyAnalytics, formatDate } from './dailyAnalyticsService.js'
+import { refreshAllPriorities } from './taskPriorityService.js'
 
 /**
  * Convert work record row from camelCase to snake_case for API compatibility
@@ -115,6 +116,9 @@ export async function createWorkRecord(recordData, userId) {
   // Trigger daily analytics update (non-blocking)
   updateDailyAnalytics(userId, formatDate(completedDate)).catch(console.error)
 
+  // Trigger task priority refresh (non-blocking)
+  refreshAllPriorities(userId).catch(console.error)
+
   return toSnakeCase(result[0])
 }
 
@@ -168,6 +172,9 @@ export async function updateWorkRecord(recordId, recordData, userId) {
     }
   }
 
+  // Trigger task priority refresh (non-blocking)
+  refreshAllPriorities(userId).catch(console.error)
+
   return toSnakeCase(result[0])
 }
 
@@ -202,6 +209,9 @@ export async function deleteWorkRecord(recordId, userId) {
       console.error
     )
   }
+
+  // Trigger task priority refresh (non-blocking)
+  refreshAllPriorities(userId).catch(console.error)
 
   return toSnakeCase(result[0])
 }
